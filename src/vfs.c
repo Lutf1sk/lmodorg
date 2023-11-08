@@ -410,7 +410,8 @@ void vfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct 
 	lt_darr(vfs_dirent_t) ents = ino_tab[ino].entries;
 	if (ents != NULL)
 		for (usz i = 0; i < lt_darr_count(ents); ++i)
-			dirbuf_add(req, &db, ents[i].name, ents[i].id);
+			if (ents[i].present)
+				dirbuf_add(req, &db, ents[i].name, ents[i].id);
 
 	reply_part(req, db.base, db.top, off, size);
 
