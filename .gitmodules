@@ -1,0 +1,3 @@
+[submodule "lt"]
+	path = lt
+	url = https://github.com/Lutf1sk/lt.git

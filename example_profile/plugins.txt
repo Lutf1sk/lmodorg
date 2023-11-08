@@ -1,0 +1,4 @@
+# all .esp files should go here, like:
+# SkyUI_SE.esp
+# or, for enabled plugins:
+# *SkyUI_SE.esp
