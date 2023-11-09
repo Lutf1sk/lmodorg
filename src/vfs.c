@@ -11,6 +11,9 @@
 #include <lt/ctype.h>
 
 #include <string.h>
+#include <ctype.h>
+
+#include "fs_nocase.h"
 
 #define FUSE_USE_VERSION 31
 #include <fuse3/fuse.h>
@@ -37,7 +40,6 @@ static char* argv0;
 
 #define ID_INVAL 0
 #define ID_ROOT 1
-#define ID_SIGN 2
 
 static lt_darr(vfs_inode_t) ino_tab = NULL;
 static usz inode_id_free = ID_INVAL;
@@ -56,10 +58,10 @@ lt_err_t inode_insert_dirent(usz parent_id, lstr_t name, usz child_id) {
 	vfs_inode_t* parent = &ino_tab[parent_id];
 	LT_ASSERT(parent->type == VI_DIR);
 
-	if (parent->entries == NULL)
-		parent->entries = lt_darr_create(vfs_dirent_t, 8, alloc);
-	vfs_dirent_t ent = { .present = 1, .name = name, .id = child_id };
+	lstr_t dupname = lt_lstr_build(alloc, "%S%c", name, 0);
+	--dupname.len;
 
+	vfs_dirent_t ent = { .present = 1, .name = dupname, .cname = dupname.str, .id = child_id };
 	lt_darr_push(parent->entries, ent);
 	inode_link(child_id);
 	return LT_SUCCESS;
@@ -73,15 +75,13 @@ void inode_erase_dirent(usz parent_id, usz ent_idx) {
 
 	if (ino_tab[parent_id].fds != 0)
 		ent->present = 0;
-	else
+	else {
+		lt_mfree(alloc, ino_tab[parent_id].entries[ent_idx].cname);
 		lt_darr_erase(ino_tab[parent_id].entries, ent_idx, 1);
+	}
 }
 
-usz inode_register(u8 type, mod_t* mod, char* path) {
-	LT_ASSERT(inode_id_free != ID_INVAL);
-	usz id = inode_id_free;
-	inode_id_free = ino_tab[id].next_id;
-
+void inode_register_at(usz id, u8 type, mod_t* mod, char* path) {
 	LT_ASSERT(!ino_tab[id].allocated);
 
 	ino_tab[id] = (vfs_inode_t) {
@@ -89,6 +89,17 @@ usz inode_register(u8 type, mod_t* mod, char* path) {
 			.type = type,
 			.mod = mod,
 			.real_path = path };
+
+	if (type == VI_DIR)
+		ino_tab[id].entries = lt_darr_create(vfs_dirent_t, 8, alloc);
+}
+
+usz inode_register(u8 type, mod_t* mod, char* path) {
+	LT_ASSERT(inode_id_free != ID_INVAL);
+	usz id = inode_id_free;
+	inode_id_free = ino_tab[id].next_id;
+
+	inode_register_at(id, type, mod, path);
 	return id;
 }
 
@@ -97,22 +108,18 @@ vfs_inode_t* inode_find_by_id(usz id) {
 	return &ino_tab[id];
 }
 
-lstr_t duplower(lstr_t str) {
-	lstr_t dup = lt_strdup(alloc, str);
-	for (usz i = 0; i < dup.len; ++i)
-		dup.str[i] = lt_to_lower(dup.str[i]);
-	return dup;
-}
-
 void inode_free(usz id) {
+	LT_ASSERT(id != ID_ROOT);
 	LT_ASSERT(ino_tab[id].allocated);
 
-	if (ino_tab[id].type == VI_DIR && ino_tab[id].entries) {
-		for (usz i = 0; i < lt_darr_count(ino_tab[id].entries); ++i) {
+	if (ino_tab[id].type == VI_DIR) {
+		lt_mfree(alloc, ino_tab[id].entries[0].cname);
+		lt_mfree(alloc, ino_tab[id].entries[1].cname);
+		for (usz i = 2; i < lt_darr_count(ino_tab[id].entries); ++i) {
 			vfs_dirent_t ent = ino_tab[id].entries[i];
 			if (ent.present)
 				inode_unlink(ent.id, 1);
-			lt_mfree(alloc, ent.name.str);
+			lt_mfree(alloc, ent.cname);
 		}
 		lt_darr_destroy(ino_tab[id].entries);
 		ino_tab[id].entries = NULL;
@@ -128,12 +135,14 @@ void inode_free(usz id) {
 void inode_force_free(usz id) {
 	LT_ASSERT(ino_tab[id].allocated);
 
-	if (ino_tab[id].type == VI_DIR && ino_tab[id].entries) {
-		for (usz i = 0; i < lt_darr_count(ino_tab[id].entries); ++i) {
+	if (ino_tab[id].type == VI_DIR) {
+		lt_mfree(alloc, ino_tab[id].entries[0].cname);
+		lt_mfree(alloc, ino_tab[id].entries[1].cname);
+		for (usz i = 2; i < lt_darr_count(ino_tab[id].entries); ++i) {
 			vfs_dirent_t ent = ino_tab[id].entries[i];
 			if (ent.present)
 				inode_force_free(ent.id);
-			lt_mfree(alloc, ent.name.str);
+			lt_mfree(alloc, ent.cname);
 		}
 		lt_darr_destroy(ino_tab[id].entries);
 	}
@@ -143,7 +152,12 @@ void inode_force_free(usz id) {
 }
 
 b8 inode_freeable(usz id) {
-	return ino_tab[id].lookups == 0 && ino_tab[id].fds == 0 && ino_tab[id].links == 0;
+	if (ino_tab[id].type == VI_REG && ino_tab[id].links > 0)
+		return 0;
+	if (ino_tab[id].type == VI_DIR && ino_tab[id].links > 1)
+		return 0;
+
+	return ino_tab[id].lookups == 0 && ino_tab[id].fds == 0;
 }
 
 void inode_unlink(usz id, usz n) {
@@ -178,7 +192,7 @@ void inode_close(usz id, usz n) {
 		for (usz i = 0; i < lt_darr_count(ino_tab[id].entries); ++i) {
 			vfs_dirent_t ent = ino_tab[id].entries[i];
 			if (!ent.present) {
-				lt_mfree(alloc, ent.name.str);
+				lt_mfree(alloc, ent.cname);
 				lt_darr_erase(ino_tab[id].entries, i--, 1);
 			}
 		}
@@ -193,9 +207,6 @@ void inode_open(usz id) {
 
 isz inode_find_dirent_index(usz parent_id, lstr_t name) {
 	lt_darr(vfs_dirent_t) ents = ino_tab[parent_id].entries;
-	if (ents == NULL)
-		return -1;
-
 	for (usz i = 0; i < lt_darr_count(ents); ++i)
 		if (ents[i].present && lt_lstr_case_eq(ents[i].name, name))
 			return i;
@@ -210,14 +221,63 @@ usz inode_find_dirent(usz parent_id, lstr_t name) {
 	return ino_tab[parent_id].entries[idx].id;
 }
 
-int copyat(int from_fd, char* from_path, int to_fd, char* to_path) {
-	int infd = openat(from_fd, from_path, O_RDONLY);
-	if (infd < 0)
-		return -errno;
+mode_t vi_type_to_st_mode(int vi) {
+	switch (vi) {
+	case VI_DIR: return S_IFDIR | 0755;
+	case VI_REG: return S_IFREG | 0666;
+	default: LT_ASSERT_NOT_REACHED(); return 0;
+	}
+}
 
-	int outfd = openat(to_fd, to_path, O_WRONLY|O_CREAT|O_TRUNC, 0666);
+void approximate_stat(fuse_ino_t ino, struct stat* out) {
+	*out = (struct stat) {
+			.st_ino = ino,
+			.st_nlink = ino_tab[ino].links,
+			.st_mode = vi_type_to_st_mode(ino_tab[ino].type) };
+}
+
+int stat_ino(fuse_ino_t ino, struct stat* stat_buf) {
+	approximate_stat(ino, stat_buf);
+
+	struct stat stat_real;
+	int res = fstatat_nocase(ino_tab[ino].mod->rootfd, ino_tab[ino].real_path, &stat_real, AT_SYMLINK_NOFOLLOW);
+	if (res < 0) {
+		lt_werrf("stat failed for '%s'(%uq): %s\n", ino_tab[ino].real_path, ino, strerror(res));
+		return res;
+	}
+
+	stat_buf->st_blocks = stat_real.st_blocks;
+	stat_buf->st_atime = stat_real.st_atime;
+	stat_buf->st_mtime = stat_real.st_mtime;
+	stat_buf->st_ctime = stat_real.st_ctime;
+	stat_buf->st_size = stat_real.st_size;
+	return LT_SUCCESS;
+}
+
+void approximate_entry(fuse_ino_t ino, struct fuse_entry_param* out) {
+	*out = (struct fuse_entry_param) {
+			.ino = ino,
+			.attr_timeout = ATTR_TIMEOUT,
+			.entry_timeout = ENTRY_TIMEOUT,
+			.attr.st_ino = ino,
+			.attr.st_mode = vi_type_to_st_mode(ino_tab[ino].type),
+			.attr.st_nlink = ino_tab[ino].links };
+}
+
+void lookup_ino(fuse_ino_t ino, struct fuse_entry_param* out) {
+	approximate_entry(ino, out);
+	LT_ASSERT(stat_ino(ino, &out->attr) == 0);
+	inode_lookup(ino);
+}
+
+int copyat(int from_fd, char* from_path, int to_fd, char* to_path) {
+	int infd = openat_nocase(from_fd, from_path, O_RDONLY, 0);
+	if (infd < 0)
+		return infd;
+
+	int outfd = openat_nocase(to_fd, to_path, O_WRONLY|O_CREAT|O_TRUNC, 0666);
  	if (outfd < 0)
-		return -errno;
+		return outfd;
 
 	usz copy_bufsz = LT_KB(64);
 	char* copy_buf = lt_malloc(alloc, copy_bufsz);
@@ -250,7 +310,7 @@ void make_output_path(char* dir_path) {
 			goto next;
 
 		char* cpath = lt_cstr_from_lstr(lt_lstr_from_range(dir_path, it), alloc);
-		int res = mkdirat(output_mod->rootfd, cpath, 0755);
+		int res = mkdirat_nocase(output_mod->rootfd, cpath, 0755);
 		if (res < 0 && errno != EEXIST)
 			lt_werrf("failed to create output directory: %s\n", lt_os_err_str());
 
@@ -261,8 +321,7 @@ void make_output_path(char* dir_path) {
 		}
 		else {
 			child_id = inode_register(VI_DIR, output_mod, cpath);
-			lstr_t dupname = duplower(name);
-			inode_insert_dirent(parent_id, dupname, child_id);
+			inode_insert_dirent(parent_id, name, child_id);
 		}
 		parent_id = child_id;
 
@@ -273,51 +332,6 @@ void make_output_path(char* dir_path) {
 	}
 }
 
-#define DIRBUF_INITIAL_SIZE 1024
-
-typedef
-struct dirbuf {
-	char* base;
-	size_t top;
-	size_t asize;
-} dirbuf_t;
-
-static
-void dirbuf_add(fuse_req_t req, dirbuf_t* db, lstr_t name, fuse_ino_t ino) {
-	char cname[512];
-	LT_ASSERT(name.len < sizeof(cname));
-	memcpy(cname, name.str, name.len);
-	cname[name.len] = 0;
-
-	usz grow_by = fuse_add_direntry(req, NULL, 0, cname, NULL, 0);
-	usz grow_to = db->top + grow_by;
-
-	if (db->asize < grow_to) {
-		while (db->asize < grow_to)
-			db->asize <<= 1;
-
-		db->base = lt_mrealloc(alloc, db->base, db->asize);
-		LT_ASSERT(db->base != NULL);
-	}
-
-	struct stat stat_buf = { .st_ino = ino };
-	fuse_add_direntry(req, &db->base[db->top], grow_by, cname, &stat_buf, grow_to);
-	db->top = grow_to;
-}
-
-static
-void reply_part(fuse_req_t req, const char* buf, size_t bufsz, off_t off, size_t maxsz) {
-	if (off >= bufsz) {
-		fuse_reply_buf(req, NULL, 0);
-		return;
-	}
-
-	if (off + maxsz > bufsz)
-		maxsz = bufsz - off;
-
-	fuse_reply_buf(req, buf + off, maxsz);
-}
-
 void vfs_init(void* usr, struct fuse_conn_info* conn) {
 
 }
@@ -326,50 +340,165 @@ void vfs_destroy(void* usr) {
 
 }
 
-int vfs_stat(fuse_ino_t ino, struct stat* stat_buf) {
-	LT_ASSERT(ino != ID_INVAL);
-	vfs_inode_t* inode = &ino_tab[ino];
-
-	struct stat stat_real;
-	if (fstatat(inode->mod->rootfd, inode->real_path, &stat_real, 0) < 0)
-		return -errno;
-
-	switch (inode->type) {
-	case VI_DIR:
-		*stat_buf = (struct stat) {
-				.st_mode = S_IFDIR | 0755,
-				.st_ino = ino,
-				.st_nlink = inode->links };
-		return 0;
-
-	case VI_REG:
-		*stat_buf = (struct stat) {
-				.st_mode = S_IFREG | 0666,
-				.st_nlink = inode->links,
-				.st_ino = ino };
-		stat_buf->st_size = stat_real.st_size;
-		return 0;
-
-	default:
-		return -ENOENT;
-	}
-}
-
 void vfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_getattr called for %uq\n", ino);
+		lt_ierrf("vfs_getattr called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	struct stat stat_buf;
-	int res = vfs_stat(ino, &stat_buf);
+	int res = stat_ino(ino, &stat_buf);
 	if (res < 0)
 		fuse_reply_err(req, -res);
 	else
 		fuse_reply_attr(req, &stat_buf, 1.0);
 }
 
+void vfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set, struct fuse_file_info* fi) {
+	if (verbose)
+		lt_ierrf("vfs_setattr called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
+	vfs_inode_t* inode = &ino_tab[ino];
+
+	if (to_set & FUSE_SET_ATTR_MODE) {
+		if (verbose)
+			lt_ierrf("SETATTR_MODE\n");
+
+		fuse_reply_err(req, EACCES);
+		return;
+
+// 		if (fchmodat(inode->mod->rootfd, inode->real_path, attr->st_mode, AT_SYMLINK_NOFOLLOW) < 0) {
+// 			lt_werrf("fchmodat failed: %s\n", lt_os_err_str());
+// 			fuse_reply_err(req, errno);
+// 			return;
+// 		}
+	}
+	if (to_set & FUSE_SET_ATTR_UID) {
+		if (verbose)
+			lt_ierrf("SETATTR_UID\n");
+
+		fuse_reply_err(req, EACCES);
+		return;
+// 		if (fchownat(inode->mod->rootfd, inode->real_path, attr->st_uid, -1, AT_SYMLINK_NOFOLLOW) < 0) {
+// 			lt_werrf("fchownat failed: %s\n", lt_os_err_str());
+// 			fuse_reply_err(req, errno);
+// 			return;
+// 		}
+	}
+	if (to_set & FUSE_SET_ATTR_GID) {
+		if (verbose)
+			lt_ierrf("SETATTR_GID\n");
+
+		fuse_reply_err(req, EACCES);
+		return;
+// 		if (fchownat(inode->mod->rootfd, inode->real_path, -1, attr->st_gid, AT_SYMLINK_NOFOLLOW) < 0) {
+// 			lt_werrf("fchownat failed: %s\n", lt_os_err_str());
+// 			fuse_reply_err(req, errno);
+// 			return;
+// 		}
+	}
+	if (to_set & FUSE_SET_ATTR_SIZE) {
+		if (verbose)
+			lt_ierrf("SETATTR_SIZE\n");
+		LT_ASSERT(inode->mod == output_mod);
+		LT_ASSERT(fi);
+		if (ftruncate(fi->fh, attr->st_size) < 0) {
+			lt_werrf("ftruncate failed: %s\n", lt_os_err_str());
+			fuse_reply_err(req, errno);
+			return;
+		}
+	}
+	if (to_set & (FUSE_SET_ATTR_ATIME|FUSE_SET_ATTR_MTIME)) {
+		struct timespec tv[2];
+		tv[0].tv_sec = 0;
+		tv[0].tv_nsec = UTIME_OMIT;
+		tv[1].tv_sec = 0;
+		tv[1].tv_nsec = UTIME_OMIT;
+
+		if (to_set & FUSE_SET_ATTR_ATIME_NOW) {
+			if (verbose)
+				lt_ierrf("SETATTR_ATIME_NOW\n");
+			tv[0].tv_nsec = UTIME_NOW;
+		}
+		else if (to_set & FUSE_SET_ATTR_ATIME) {
+			if (verbose)
+				lt_ierrf("SETATTR_ATIME\n");
+			tv[0].tv_nsec = attr->st_atime;
+		}
+
+		if (to_set & FUSE_SET_ATTR_MTIME_NOW) {
+			if (verbose)
+				lt_ierrf("SETATTR_MTIME_NOW\n");
+			tv[1].tv_nsec = UTIME_NOW;
+		}
+		else if (to_set & FUSE_SET_ATTR_MTIME_NOW) {
+			if (verbose)
+				lt_ierrf("SETATTR_MTIME\n");
+			tv[1].tv_nsec = attr->st_mtime;
+		}
+
+		if (utimensat(inode->mod->rootfd, inode->real_path, tv, AT_SYMLINK_NOFOLLOW) < 0) {
+			lt_werrf("utimensat failed: %s\n", lt_os_err_str());
+			fuse_reply_err(req, errno);
+			return;
+		}
+	}
+
+	// Unhandled
+	int err = 0;
+	if (to_set & FUSE_SET_ATTR_FORCE) {
+		lt_werrf("unhandled FUSE_SET_ATTR_FORCE\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_CTIME) {
+		lt_werrf("unhandled FUSE_SET_ATTR_CTIME\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_KILL_SUID) {
+		lt_werrf("unhandled FUSE_SET_ATTR_KILL_SUID\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_KILL_SGID) {
+		lt_werrf("unhandled FUSE_SET_ATTR_KILL_SGID\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_FILE) {
+		lt_werrf("unhandled FUSE_SET_ATTR_FILE\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_KILL_PRIV) {
+		lt_werrf("unhandled FUSE_SET_ATTR_KILL_PRIV\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_OPEN) {
+		lt_werrf("unhandled FUSE_SET_ATTR_OPEN\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_TIMES_SET) {
+		lt_werrf("unhandled FUSE_SET_ATTR_TIMES_SET\n");
+		err = EOPNOTSUPP;
+	}
+	if (to_set & FUSE_SET_ATTR_TOUCH) {
+		lt_werrf("unhandled FUSE_SET_ATTR_TOUCH\n");
+		err = EOPNOTSUPP;
+	}
+
+	if (err)
+		fuse_reply_err(req, err);
+	else
+		fuse_reply_attr(req, attr, ATTR_TIMEOUT);
+}
+
+void vfs_getxattr(fuse_req_t req, fuse_ino_t ino, const char* key, size_t size) {
+	lt_werrf("vfs_getxattr called for '%s'(%uq) with key '%s'\n", ino_tab[ino].real_path, ino, key);
+	fuse_reply_err(req, EOPNOTSUPP);
+}
+
+void vfs_setxattr(fuse_req_t req, fuse_ino_t ino, const char* key, const char* val, size_t size, int flags) {
+	lt_werrf("vfs_setxattr called for '%s'(%uq) with key '%s'\n", ino_tab[ino].real_path, ino, key);
+	fuse_reply_err(req, EOPNOTSUPP);
+}
+
 void vfs_lookup(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 	if (verbose)
-		lt_ierrf("vfs_lookup called for '%s' on %uq\n", cname, ino);
+		lt_ierrf("vfs_lookup called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
 
 	lstr_t name = lt_lstr_from_cstr((char*)cname);
 
@@ -380,52 +509,78 @@ void vfs_lookup(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 	}
 
 	struct fuse_entry_param ent;
-	memset(&ent, 0, sizeof(ent));
-	ent.ino = child_id;
-	ent.attr_timeout = ATTR_TIMEOUT;
-	ent.entry_timeout = ENTRY_TIMEOUT;
-	int staterr = vfs_stat(child_id, &ent.attr);
-	if (staterr != 0)
-		fuse_reply_err(req, -staterr);
-	else {
-		inode_lookup(child_id);
-		fuse_reply_entry(req, &ent);
-	}
+	lookup_ino(child_id, &ent);
+	fuse_reply_entry(req, &ent);
 }
 
 void vfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_readdir called for %uq\n", ino);
+		lt_ierrf("vfs_readdir called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
-	dirbuf_t db = {
-			.asize = DIRBUF_INITIAL_SIZE,
-			.base = lt_malloc(alloc, DIRBUF_INITIAL_SIZE) };
-	LT_ASSERT(db.base != NULL);
-
-	dirbuf_add(req, &db, CLSTR("."), ino);
-	dirbuf_add(req, &db, CLSTR(".."), ino); // !! incorrect inode
-	if (ino == ID_ROOT)
-		dirbuf_add(req, &db, CLSTR(".LMODORG"), ID_SIGN);
+	usz bufoff = 0;
 
 	lt_darr(vfs_dirent_t) ents = ino_tab[ino].entries;
-	if (ents != NULL)
-		for (usz i = 0; i < lt_darr_count(ents); ++i)
-			if (ents[i].present)
-				dirbuf_add(req, &db, ents[i].name, ents[i].id);
+	usz entcount = lt_darr_count(ents);
 
-	reply_part(req, db.base, db.top, off, size);
+	char* buf = lt_malloc(alloc, size);
+	for (usz i = off; i < entcount; ++i) {
+		struct stat st;
+		if (ents[i].present)
+			stat_ino(ents[i].id, &st);
+		else
+			memset(&st, 0, sizeof(st));
+		usz adv = fuse_add_direntry(req, &buf[bufoff], size - bufoff, ents[i].cname, &st, i + 1);
+		if (bufoff + adv > size)
+			break;
+		bufoff += adv;
+	}
 
-	lt_mfree(alloc, db.base);
+reply:
+	fuse_reply_buf(req, buf, bufoff);
+	lt_mfree(alloc, buf);
+	return;
+}
+
+void vfs_readdirplus(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info* fi) {
+	if (verbose)
+		lt_ierrf("vfs_readdirplus called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
+
+	usz bufoff = 0;
+
+	lt_darr(vfs_dirent_t) ents = ino_tab[ino].entries;
+	usz entcount = lt_darr_count(ents);
+
+	char* buf = lt_malloc(alloc, size);
+	for (usz i = off; i < entcount; ++i) {
+		struct fuse_entry_param ent;
+		if (ents[i].present) {
+			approximate_entry(ents[i].id, &ent);
+			stat_ino(ents[i].id, &ent.attr);
+		}
+		else
+			memset(&ent, 0, sizeof(ent));
+		usz adv = fuse_add_direntry_plus(req, &buf[bufoff], size - bufoff, ents[i].cname, &ent, i + 1);
+		if (bufoff + adv > size)
+			break;
+		if (i >= 2)
+			inode_lookup(ents[i].id);
+		bufoff += adv;
+	}
+
+reply:
+	fuse_reply_buf(req, buf, bufoff);
+	lt_mfree(alloc, buf);
+	return;
 }
 
 void vfs_mknod(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode, dev_t dev) {
-	lt_werrf("vfs_mknod called for '%s' on %uq\n", cname, ino);
-	fuse_reply_err(req, EACCES);
+	lt_ferrf("vfs_mknod called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
+	fuse_reply_err(req, EOPNOTSUPP);
 }
 
 void vfs_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_werrf("vfs_fsync called for %uq\n", ino);
+		lt_werrf("vfs_fsync called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 	int res;
 	if (datasync)
 		res = fdatasync(fi->fh);
@@ -440,7 +595,7 @@ void vfs_fsync(fuse_req_t req, fuse_ino_t ino, int datasync, struct fuse_file_in
 
 void vfs_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_flush called for %uq\n", ino);
+		lt_ierrf("vfs_flush called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 	int res = close(dup(fi->fh));
 	if (res < 0)
 		fuse_reply_err(req, errno);
@@ -450,7 +605,7 @@ void vfs_flush(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 
 void vfs_rename(fuse_req_t req, fuse_ino_t ino1, const char* cname1, fuse_ino_t ino2, const char* cname2, unsigned int flags) {
 	if (verbose)
-		lt_ierrf("vfs_rename called for '%s'/'%s' on %uq/%uq\n", cname1, cname2, ino1, ino2);
+		lt_ierrf("vfs_rename called for '%s'(%uq)/'%s' to '%s'(%uq)/'%s'\n", ino_tab[ino1].real_path, ino1, cname1, ino_tab[ino2].real_path, ino2, cname2);
 
 	lstr_t name1 = lt_lstr_from_cstr((char*)cname1);
 	lstr_t name2 = lt_lstr_from_cstr((char*)cname2);
@@ -501,8 +656,7 @@ void vfs_rename(fuse_req_t req, fuse_ino_t ino1, const char* cname1, fuse_ino_t 
 	}
 
 	to_id = inode_register(VI_REG, output_mod, to_path);
-	lstr_t dupname = duplower(name2);
-	inode_insert_dirent(ino2, dupname, to_id);
+	inode_insert_dirent(ino2, name2, to_id);
 
 	inode_erase_dirent(ino1, ent_idx);
 
@@ -511,7 +665,7 @@ void vfs_rename(fuse_req_t req, fuse_ino_t ino1, const char* cname1, fuse_ino_t 
 
 void vfs_create(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_create called for '%s' on %uq\n", cname, ino);
+		lt_ierrf("vfs_create called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
 
 	lstr_t name = lt_lstr_from_cstr((char*)cname);
 
@@ -525,32 +679,26 @@ void vfs_create(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode, 
 	char* real_path = lt_lstr_build(alloc, "%s/%s%c", ino_tab[ino].real_path, cname, 0).str;
 	child_id = inode_register(VI_REG, output_mod, real_path);
 
-	int fd = openat(output_mod->rootfd, real_path, O_CREAT|O_WRONLY|O_TRUNC, mode);
+	int fd = openat_nocase(output_mod->rootfd, real_path, O_CREAT|O_WRONLY|O_TRUNC, mode);
 	if (fd < 0) {
 		inode_free(child_id);
-		fuse_reply_err(req, errno);
+		fuse_reply_err(req, -fd);
 		return;
 	}
 	fi->fh = fd;
 
-	lstr_t dupname = duplower(name);
-	inode_insert_dirent(ino, dupname, child_id);
+	inode_insert_dirent(ino, name, child_id);
 
 	struct fuse_entry_param ent;
-	memset(&ent, 0, sizeof(ent));
-	ent.ino = child_id;
-	ent.attr_timeout = ATTR_TIMEOUT;
-	ent.entry_timeout = ENTRY_TIMEOUT;
-	LT_ASSERT(vfs_stat(child_id, &ent.attr) == 0);
+	lookup_ino(child_id, &ent);
 
-	inode_lookup(child_id);
 	inode_open(child_id);
 	fuse_reply_create(req, &ent, fi);
 }
 
 void vfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_open called for %uq\n", ino);
+		lt_ierrf("vfs_open called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	if (ino_tab[ino].type == VI_DIR) {
 		fuse_reply_err(req, EISDIR);
@@ -578,9 +726,9 @@ void vfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 		return;
 	}
 
-	int fd = openat(ino_tab[ino].mod->rootfd, ino_tab[ino].real_path, fi->flags);
+	int fd = openat_nocase(ino_tab[ino].mod->rootfd, ino_tab[ino].real_path, fi->flags, 0);
 	if (fd < 0) {
-		fuse_reply_err(req, errno);
+		fuse_reply_err(req, -fd);
 		return;
 	}
 
@@ -591,7 +739,7 @@ void vfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 
 void vfs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_release called for %uq\n", ino);
+		lt_ierrf("vfs_release called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	LT_ASSERT(ino_tab[ino].type == VI_REG);
 
@@ -603,7 +751,7 @@ void vfs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 
 void vfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_read called for %uq\n", ino);
+		lt_ierrf("vfs_read called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	char* buf = lt_malloc(alloc, size);
 	ssize_t res = pread(fi->fh, buf, size, off);
@@ -619,7 +767,7 @@ void vfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fus
 
 void vfs_write(fuse_req_t req, fuse_ino_t ino, const char* buf, size_t size, off_t off, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_write called for %uq\n", ino);
+		lt_ierrf("vfs_write called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	ssize_t res = pwrite(fi->fh, buf, size, off);
 	if (res < 0) {
@@ -638,7 +786,7 @@ void vfs_statfs(fuse_req_t req, fuse_ino_t ino) {
 
 void vfs_unlink(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 	if (verbose)
-		lt_ierrf("vfs_unlink called for '%s' on %uq\n", cname, ino);
+		lt_ierrf("vfs_unlink called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
 
 	isz ent_idx = inode_find_dirent_index(ino, lt_lstr_from_cstr((char*)cname));
 	if (ent_idx == -1) {
@@ -653,7 +801,7 @@ void vfs_unlink(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 	}
 
 	if (ino_tab[child_id].mod == output_mod) {
-		int res = unlinkat(output_mod->rootfd, ino_tab[child_id].real_path, 0);
+		int res = unlinkat_nocase(output_mod->rootfd, ino_tab[child_id].real_path, 0);
 		if (res < 0) {
 			fuse_reply_err(req, errno);
 			return;
@@ -666,7 +814,7 @@ void vfs_unlink(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 
 void vfs_mkdir(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode) {
 	if (verbose)
-		lt_ierrf("vfs_mkdir called for '%s' on %uq\n", cname, ino);
+		lt_ierrf("vfs_mkdir called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
 
 	lstr_t name = lt_lstr_from_cstr((char*)cname);
 	usz child_id = inode_find_dirent(ino, name);
@@ -677,32 +825,27 @@ void vfs_mkdir(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode) {
 
 	char* real_path = lt_lstr_build(alloc, "%s/%s%c", ino_tab[ino].real_path, cname, 0).str;
 	make_output_path(ino_tab[ino].real_path);
-	int res = mkdirat(output_mod->rootfd, real_path, mode);
+	int res = mkdirat_nocase(output_mod->rootfd, real_path, mode);
 	if (res < 0) {
 		lt_mfree(alloc, real_path);
 		fuse_reply_err(req, errno);
 		return;
 	}
 
-	lstr_t dupname = duplower(name);
-
 	child_id = inode_register(VI_DIR, output_mod, real_path);
-	inode_insert_dirent(ino, dupname, child_id);
+	inode_insert_dirent(child_id, CLSTR("."), child_id);
+	inode_insert_dirent(child_id, CLSTR(".."), ino);
+
+	inode_insert_dirent(ino, name, child_id);
 
 	struct fuse_entry_param ent;
-	memset(&ent, 0, sizeof(ent));
-	ent.ino = child_id;
-	ent.attr_timeout = ATTR_TIMEOUT;
-	ent.entry_timeout = ENTRY_TIMEOUT;
-	LT_ASSERT(vfs_stat(ent.ino, &ent.attr) >= 0);
-
-	inode_lookup(child_id);
+	lookup_ino(child_id, &ent);
 	fuse_reply_entry(req, &ent);
 }
 
 void vfs_rmdir(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 	if (verbose)
-		lt_ierrf("vfs_rmdir called for '%s' on %uq\n", cname, ino);
+		lt_ierrf("vfs_rmdir called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
 
 	isz ent_idx = inode_find_dirent_index(ino, lt_lstr_from_cstr((char*)cname));
 	if (ent_idx == -1) {
@@ -717,7 +860,7 @@ void vfs_rmdir(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 	}
 
 	if (ino_tab[child_id].mod == output_mod) {
-		int res = unlinkat(output_mod->rootfd, ino_tab[child_id].real_path, AT_REMOVEDIR);
+		int res = unlinkat_nocase(output_mod->rootfd, ino_tab[child_id].real_path, AT_REMOVEDIR);
 		if (res < 0) {
 			fuse_reply_err(req, errno);
 			return;
@@ -730,7 +873,7 @@ void vfs_rmdir(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 
 void vfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_opendir called for %uq\n", ino);
+		lt_ierrf("vfs_opendir called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	inode_open(ino);
 
@@ -739,7 +882,7 @@ void vfs_opendir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 
 void vfs_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_releasedir called for %uq\n", ino);
+		lt_ierrf("vfs_releasedir called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	inode_close(ino, 1);
 
@@ -747,15 +890,16 @@ void vfs_releasedir(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 }
 
 void vfs_fallocate(fuse_req_t req, fuse_ino_t ino, int mode, off_t off, off_t len, struct fuse_file_info* fi) {
-	lt_werrf("vfs_fallocate called for %uq\n", ino);
+	lt_ferrf("vfs_fallocate called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 	fuse_reply_err(req, EOPNOTSUPP);
 }
 
 
 void vfs_forget(fuse_req_t req, fuse_ino_t ino, u64 nlookup) {
 	if (verbose)
-		lt_ierrf("vfs_forget called for %uq\n", ino);
+		lt_ierrf("vfs_forget called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 	inode_forget(ino, nlookup);
+// 	lt_printf("'%s' allocated:%ub fds:%uz links:%uz lookups:%uz\n", ino_tab[ino].real_path, ino_tab[ino].allocated, ino_tab[ino].fds, ino_tab[ino].links, ino_tab[ino].lookups);
 	fuse_reply_none(req);
 }
 
@@ -770,13 +914,28 @@ void vfs_forget_multi(fuse_req_t req, size_t count, struct fuse_forget_data* for
 
 void vfs_lseek(fuse_req_t req, fuse_ino_t ino, off_t off, int whence, struct fuse_file_info* fi) {
 	if (verbose)
-		lt_ierrf("vfs_lseek called for %uq\n", ino);
+		lt_ierrf("vfs_lseek called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	off_t res = lseek(fi->fh, off, whence);
 	if (res != -1)
 		fuse_reply_err(req, errno);
 	else
 		fuse_reply_lseek(req, res);
+}
+
+void vfs_symlink(fuse_req_t req, const char* link, fuse_ino_t ino, const char* name) {
+	lt_ferrf("vfs_symlink\n");
+	fuse_reply_err(req, EOPNOTSUPP);
+}
+
+void vfs_link(fuse_req_t req, fuse_ino_t ino, fuse_ino_t newparent, const char* newname) {
+	lt_ferrf("vfs_link\n");
+	fuse_reply_err(req, EOPNOTSUPP);
+}
+
+void vfs_readlink(fuse_req_t req, fuse_ino_t ino) {
+	lt_ferrf("vfs_readlink\n");
+	fuse_reply_err(req, EOPNOTSUPP);
 }
 
 const struct fuse_lowlevel_ops fuse_oper = {
@@ -787,19 +946,19 @@ const struct fuse_lowlevel_ops fuse_oper = {
 	.create = vfs_create,
 	.open = vfs_open,
 	.release = vfs_release,
-// 	.symlink = vfs_symlink,
-// 	.link = vfs_link,
+	.symlink = vfs_symlink,
+	.link = vfs_link,
 	.unlink = vfs_unlink,
-// 	.readlink = vfs_readlink,
+	.readlink = vfs_readlink,
 
 	.lookup = vfs_lookup,
 	.forget = vfs_forget,
 	.forget_multi = vfs_forget_multi,
 
 	.getattr = vfs_getattr,
-// 	.setattr = vfs_setattr,
-// 	.getxattr = vfs_getxattr,
-// 	.setxattr = vfs_setxattr,
+	.setattr = vfs_setattr,
+	.getxattr = vfs_getxattr,
+	.setxattr = vfs_setxattr,
 // 	.listxattr = vfs_listxattr,
 // 	.removexattr = vfs_removexattr,
 	.statfs = vfs_statfs,
@@ -809,7 +968,7 @@ const struct fuse_lowlevel_ops fuse_oper = {
 	.opendir = vfs_opendir,
 	.releasedir = vfs_releasedir,
 	.readdir = vfs_readdir,
-// 	.readdirplus = vfs_readdirplus,
+	.readdirplus = vfs_readdirplus,
 // 	.fsyncdir = vfs_fsyncdir,
 
 	.fallocate = vfs_fallocate,
@@ -856,71 +1015,62 @@ void vfs_thread_proc(void* mountpoint) {
 	fuse_opt_free_args(&fuse_args);
 }
 
-void register_dir(usz parent_id, mod_t* mod, int parent_fd, char* dir_path);
+#include <libgen.h>
 
-void register_dirent(usz parent_id, mod_t* mod, int parent_fd, char* dir_path, struct dirent* ent) {
-	lstr_t dupname = duplower(lt_lstr_from_cstr(ent->d_name));
-
-	char* real_path = lt_lstr_build(alloc, "%s/%s%c", dir_path, ent->d_name, 0).str;
-
+void register_dirent(usz parent_id, mod_t* mod, char* real_path, lstr_t name, u32 type) {
 	usz child_id;
 	b8 free_path_late = 0;
 
-	switch (ent->d_type) {
+	switch (type) {
 	case DT_DIR:
-		child_id = inode_find_dirent(parent_id, dupname);
+		child_id = inode_find_dirent(parent_id, name);
 		if (child_id != ID_INVAL) {
 			if (ino_tab[child_id].type != VI_DIR)
 				lt_ferrf("incompatible mapping for '%s', cannot overwrite file with directory\n", real_path);
-			lt_mfree(alloc, dupname.str);
 			free_path_late = 1;
 		}
 		else {
 			child_id = inode_register(VI_DIR, mod, real_path);
-			inode_insert_dirent(parent_id, dupname, child_id);
+			inode_insert_dirent(child_id, CLSTR("."), child_id);
+			inode_insert_dirent(child_id, CLSTR(".."), parent_id);
+
+			inode_insert_dirent(parent_id, name, child_id);
 		}
 
-		int fd = openat(parent_fd, ent->d_name, O_RDONLY);
-		LT_ASSERT(fd >= 0);
-		register_dir(child_id, mod, fd, real_path);
-		close(fd);
+		DIR* dir = fdopendir(openat(mod->rootfd, real_path, O_RDONLY));
+		LT_ASSERT(dir != NULL);
+		for (struct dirent* ent; (ent = readdir(dir));) {
+			if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+				continue;
+
+			char* child_path = lt_lstr_build(alloc, "%s/%s%c", real_path, ent->d_name, 0).str;
+			register_dirent(child_id, mod, child_path, lt_lstr_from_cstr(ent->d_name), ent->d_type);
+		}
+		closedir(dir);
 
 		if (free_path_late)
 			lt_mfree(alloc, real_path);
 		return;
 
 	case DT_REG:
-		child_id = inode_find_dirent(parent_id, dupname);
+		child_id = inode_find_dirent(parent_id, name);
 		if (child_id != ID_INVAL) {
 			if (ino_tab[child_id].type != VI_REG)
 				lt_ferrf("incompatible mapping for '%s', cannot overwrite directory with file\n", real_path);
 			ino_tab[child_id].mod = mod;
-			lt_mfree(alloc, dupname.str);
 			lt_mfree(alloc, real_path);
 		}
 		else {
 			child_id = inode_register(VI_REG, mod, real_path);
-			inode_insert_dirent(parent_id, dupname, child_id);
+			inode_insert_dirent(parent_id, name, child_id);
 		}
 		return;
 
 	case DT_LNK:
 	default:
-		lt_werrf("unhandled file type for '%s', entry ignored\n", ent->d_name);
+		lt_werrf("unhandled file type for '%S', entry ignored\n", name);
 		lt_mfree(alloc, real_path);
-		lt_mfree(alloc, dupname.str);
 		return;
-	}
-}
-
-void register_dir(usz parent_id, mod_t* mod, int parent_fd, char* dir_path) {
-	DIR* dir = fdopendir(parent_fd);
-	LT_ASSERT(dir != NULL);
-
-	for (struct dirent* ent; (ent = readdir(dir));) {
-		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-			continue;
-		register_dirent(parent_id, mod, parent_fd, dir_path, ent);
 	}
 }
 
@@ -947,19 +1097,15 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 			.rootfd = loopback_fd };
 	mod_register(loopback_mod);
 
-	ino_tab[ID_ROOT] = (vfs_inode_t) {
-			.allocated = 1,
-			.type = VI_DIR,
-			.mod = loopback_mod,
-			.links = 1,
-			.real_path = strdup(".") };
-
-	ino_tab[ID_SIGN + 1].next_id = ID_INVAL;
-	for (usz i = ID_SIGN + 2; i < lt_darr_count(ino_tab); ++i)
+	ino_tab[ID_ROOT + 1].next_id = ID_INVAL;
+	for (usz i = ID_ROOT + 2; i < lt_darr_count(ino_tab); ++i)
 		ino_tab[i].next_id = i - 1;
 	inode_id_free = INO_TABSZ - 1;
 
-	register_dir(ID_ROOT, loopback_mod, loopback_fd, ".");
+	inode_register_at(ID_ROOT, VI_DIR, loopback_mod, strdup("."));
+	inode_insert_dirent(ID_ROOT, CLSTR("."), ID_ROOT);
+	inode_insert_dirent(ID_ROOT, CLSTR(".."), ID_ROOT); // !! incorrect inode
+	register_dirent(ID_ROOT, loopback_mod, strdup("."), CLSTR("."), DT_DIR);
 
 	// create output mod
 
@@ -973,7 +1119,7 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 			.rootfd = output_fd };
 	mod_register(output_mod);
 
-	register_dir(ID_ROOT, output_mod, output_fd, ".");
+	register_dirent(ID_ROOT, output_mod, strdup("."), CLSTR("."), DT_DIR);
 
 	// register mods
 
@@ -983,7 +1129,7 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 
 		if (verbose)
 			lt_ierrf("loading mod '%S'\n", mods[i]->name);
-		register_dir(ID_ROOT, mods[i], fd, ".");
+		register_dirent(ID_ROOT, mods[i], strdup("."), CLSTR("."), DT_DIR);
 	}
 
 	vfs_thread = lt_thread_create(vfs_thread_proc, mountpoint, alloc);

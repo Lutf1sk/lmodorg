@@ -17,6 +17,7 @@ typedef
 struct vfs_dirent {
 	b8 present;
 	lstr_t name;
+	char* cname;
 	usz id;
 } vfs_dirent_t;
 

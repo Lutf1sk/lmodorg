@@ -3,7 +3,8 @@ OUT := lmodorg
 SRC := \
 	src/main.c \
 	src/vfs.c \
-	src/mod.c
+	src/mod.c \
+	src/fs_nocase.c
 
 LT_PATH := lt
 LT_ENV :=
