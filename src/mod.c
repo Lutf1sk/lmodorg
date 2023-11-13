@@ -7,8 +7,8 @@
 
 #define alloc lt_libc_heap
 
-#define mod_is_equal(mod, key) (lt_lstr_eq((*mod).name, key))
-#define mod_is_lesser(mod, key) (lt_lstr_cmp((*mod).name, key) < 0)
+#define mod_is_equal(mod, key) (lt_lseq((*mod).name, key))
+#define mod_is_lesser(mod, key) (lt_lscmp((*mod).name, key) < 0)
 
 LT_DEFINE_BINARY_SEARCH_FUNC(mod_t*, lstr_t, lookup_mod, mod_is_lesser, mod_is_equal);
 LT_DEFINE_BINARY_SEARCH_NEAREST_FUNC(mod_t*, lstr_t, lookup_nearest_mod, mod_is_lesser, mod_is_equal);

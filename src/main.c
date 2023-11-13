@@ -13,13 +13,17 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
+#include <libgen.h>
 
 #include "vfs.h"
+#include "fs.h"
 #include "mod.h"
+#include "fomod.h"
 
 #define alloc lt_libc_heap
 
 b8 verbose = 0;
+b8 color = 0;
 
 lt_darr(lstr_t) get_modlist(lt_conf_t* cf) {
 	lt_darr(lstr_t) mods = lt_darr_create(lstr_t, 32, alloc);
@@ -56,8 +60,8 @@ lt_darr(avail_mod_t) get_available_mods(char* path) {
 			continue;
 
 		avail_mod_t mod = {
-				.name = lt_strdup(alloc, lt_lstr_from_cstr(ent->d_name)),
-				.root_path = lt_lstr_build(alloc, "%s/%s%c", path, ent->d_name, 0).str };
+				.name = lt_strdup(alloc, lt_lsfroms(ent->d_name)),
+				.root_path = lt_lsbuild(alloc, "%s/%s%c", path, ent->d_name, 0).str };
 		lt_darr_push(mods, mod);
 	}
 	closedir(mods_dir);
@@ -72,7 +76,7 @@ lt_darr(mod_t*) get_mods(lt_darr(lstr_t) modlist, lt_darr(avail_mod_t) avail_mod
 	for (usz i = 0; i < lt_darr_count(modlist); ++i) {
 		avail_mod_t* avail_mod = NULL;
 		for (usz j = 0; j < lt_darr_count(avail_mods); ++j) {
-			if (lt_lstr_eq(modlist[i], avail_mods[j].name)) {
+			if (lt_lseq(modlist[i], avail_mods[j].name)) {
 				avail_mod = &avail_mods[j];
 				break;
 			}
@@ -104,24 +108,24 @@ lt_darr(mod_t*) get_mods(lt_darr(lstr_t) modlist, lt_darr(avail_mod_t) avail_mod
 
 b8 mod_exists(lt_darr(avail_mod_t) avail_mods, lstr_t name) {
 	for (usz i = 0; i < lt_darr_count(avail_mods); ++i)
-		if (lt_lstr_eq(avail_mods[i].name, name))
+		if (lt_lseq(avail_mods[i].name, name))
 			return 1;
 	return 0;
 }
 
 b8 mod_enabled(lt_darr(lstr_t) modlist, lstr_t name) {
 	for (usz i = 0; i < lt_darr_count(modlist); ++i)
-		if (lt_lstr_eq(modlist[i], name))
+		if (lt_lseq(modlist[i], name))
 			return 1;
 	return 0;
 }
 
-void copy_profile_configs(lt_conf_t* cf) {
+void copy_profile_configs(lstr_t profile_path, lt_conf_t* cf) {
 	lt_conf_t* copy = lt_conf_find_array(cf, CLSTR("copy_files"), NULL);
 	if (copy == NULL)
 		return;
 
-	usz copy_bufsz = LT_KB(128);
+	usz copy_bufsz = LT_KB(64);
 	char* copy_buf = lt_malloc(alloc, copy_bufsz);
 
 	for (usz i = 0; i < copy->child_count; ++i) {
@@ -130,6 +134,8 @@ void copy_profile_configs(lt_conf_t* cf) {
 			continue;
 
 		lstr_t from = lt_conf_str(link, CLSTR("from"));
+		from = lt_lsbuild(alloc, "%S/%S", profile_path, from);
+
 		lstr_t to = lt_conf_str(link, CLSTR("to"));
 
 		lt_file_t* inf = lt_fopenp(from, LT_FILE_R, 0, alloc);
@@ -151,6 +157,7 @@ void copy_profile_configs(lt_conf_t* cf) {
 			LT_ASSERT(res > 0);
 		}
 
+		lt_mfree(alloc, from.str);
 		lt_fclose(inf, alloc);
 		lt_fclose(outf, alloc);
 	}
@@ -190,6 +197,8 @@ int remove_recursive(int parent_fd, char* name) {
 
 	if (S_ISDIR(st.st_mode)) {
 		int fd = openat(parent_fd, name, O_RDONLY|O_DIRECTORY);
+		if (fd < 0)
+			return -1;
 
 		DIR* dir = fdopendir(fd);
 		if (!dir)
@@ -216,8 +225,6 @@ int remove_recursive(int parent_fd, char* name) {
 	return ret;
 }
 
-#include <libgen.h>
-
 int rmdir_recursive(char* path) {
 	int fd = open(path, O_RDONLY|O_DIRECTORY);
 	if (fd < 0)
@@ -231,42 +238,231 @@ int rmdir_recursive(char* path) {
 	return remove_recursive(parent_fd, basename(path));
 }
 
+int copy_recursive(int from_fd, int to_fd, char* name) {
+	int ret = 0;
+
+	struct stat st;
+	if (fstatat(from_fd, name, &st, AT_SYMLINK_NOFOLLOW) < 0)
+		return -1;
+
+	if (S_ISDIR(st.st_mode)) {
+		if (mkdirat(to_fd, name, 0755) < 0)
+			return -1;
+
+		int from_new_fd = openat(from_fd, name, O_RDONLY|O_DIRECTORY);
+		if (from_new_fd < 0)
+			return -1;
+
+		int to_new_fd = openat(to_fd, name, O_RDONLY|O_DIRECTORY);
+		if (to_new_fd < 0) {
+			close(from_fd);
+			return -1;
+		}
+
+		DIR* dir = fdopendir(from_new_fd);
+		LT_ASSERT(dir != NULL);
+
+		struct dirent* ent;
+		while ((ent = readdir(dir))) {
+			if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+				continue;
+			if (copy_recursive(from_new_fd, to_new_fd, ent->d_name) < 0)
+				ret = -1;
+		}
+
+		close(from_new_fd);
+		close(to_new_fd);
+		closedir(dir);
+	}
+	else if (S_ISREG(st.st_mode)) {
+		if (copyat(from_fd, name, to_fd, name) < 0)
+			return -1;
+	}
+	else {
+		LT_ASSERT_NOT_REACHED();
+	}
+
+	return ret;
+}
+
+int copydir_contents_recursive(char* from_path, char* to_path) {
+	int from_fd = open(from_path, O_RDONLY|O_DIRECTORY);
+	if (from_fd < 0)
+		return -1;
+	int to_fd = open(to_path, O_RDONLY|O_DIRECTORY);
+	if (to_fd < 0)
+		return -1;
+	DIR* dir = fdopendir(from_fd);
+
+	LT_ASSERT(dir != NULL);
+
+	struct dirent* ent;
+	while ((ent = readdir(dir))) {
+		if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
+			continue;
+		if (copy_recursive(from_fd, to_fd, ent->d_name) < 0) {
+			closedir(dir);
+			close(to_fd);
+			return -1;
+		}
+	}
+	closedir(dir);
+	close(to_fd);
+	return 0;
+}
+
+int install_root(char* in_path, char* out_path) {
+	if (copydir_contents_recursive(in_path, out_path) < 0) {
+		lt_werrf("failed to copy contents of '%s': %s\n", in_path, lt_os_err_str());
+		rmdir_recursive(out_path);
+		return -1;
+	}
+
+	lt_printf("installation complete\n");
+	return 0;
+}
+
+int install_data(char* in_path, char* out_root_path) {
+	char* out_data_path = lt_lsbuild(alloc, "%s/Data%c", out_root_path, 0).str;
+	LT_ASSERT(out_data_path != NULL);
+
+	if (mkdir(out_data_path, 0755) < 0) {
+		lt_werrf("failed to create directory '%s': %s\n", out_data_path, lt_os_err_str());
+		lt_mfree(alloc, out_data_path);
+		return -1;
+	}
+
+	if (copydir_contents_recursive(in_path, out_data_path) < 0) {
+		lt_werrf("failed to copy contents of '%s': %s\n", in_path, lt_os_err_str());
+		rmdir_recursive(out_root_path);
+		lt_mfree(alloc, out_data_path);
+		return -1;
+	}
+
+	lt_printf("installation complete\n");
+	lt_mfree(alloc, out_data_path);
+	return 0;
+}
+
+#define DIR_UNKN	0
+#define DIR_ROOT	1
+#define DIR_DATA	2
+#define DIR_FOMOD	3
+
+u8 find_mod_dir(char* path, char** out_dir) {
+	b8 is_root = 0;
+	b8 is_data = 0;
+	b8 dll_present = 0;
+
+	char first_dir[256] = "";
+	usz file_count = 0;
+
+	DIR* dir = opendir(path);
+	if (dir == NULL)
+		lt_ferrf("failed to open '%s': %s\n", path, lt_os_err_str());
+	struct dirent* ent;
+	while ((ent = readdir(dir))) {
+		lstr_t name = lt_lsfroms(ent->d_name);
+		if (lt_lseq(name, CLSTR(".")) || lt_lseq(name, CLSTR("..")))
+			continue;
+
+		++file_count;
+
+		if (file_count == 1 && ent->d_type == DT_DIR)
+			memcpy(first_dir, name.str, name.len + 1);
+
+		if (lt_lseq_nocase(name, CLSTR("fomod"))) {
+			closedir(dir);
+			*out_dir = strdup(path);
+			return DIR_FOMOD;
+		}
+
+		if (lt_lseq_nocase(name, CLSTR("Meshes")) ||
+			lt_lseq_nocase(name, CLSTR("Scripts")) ||
+			lt_lseq_nocase(name, CLSTR("Source")) ||
+			lt_lseq_nocase(name, CLSTR("Textures")) ||
+			lt_lseq_nocase(name, CLSTR("Interface")) ||
+			lt_lseq_nocase(name, CLSTR("Strings")) ||
+			lt_lseq_nocase(name, CLSTR("Video")) ||
+			lt_lseq_nocase(name, CLSTR("Sound")) ||
+			lt_lseq_nocase(name, CLSTR("SKSE")) ||
+			lt_lssuffix(name, CLSTR(".esp")) ||
+			lt_lssuffix(name, CLSTR(".esm")) ||
+			lt_lssuffix(name, CLSTR(".esl")) ||
+			lt_lssuffix(name, CLSTR(".bsa")))
+		{
+			is_data = 1;
+		}
+
+		if (lt_lseq_nocase(name, CLSTR("Data")))
+			is_root = 1;
+
+		if (lt_lssuffix(name, CLSTR(".dll")))
+			dll_present = 1;
+	}
+	closedir(dir);
+
+	if (is_data) {
+		*out_dir = strdup(path);
+		return DIR_DATA;
+	}
+	if (is_root) {
+		*out_dir = strdup(path);
+		return DIR_ROOT;
+	}
+
+	if (file_count == 1 && first_dir[0] != 0) {
+		char* next_path = lt_lsbuild(alloc, "%s/%s%c", path, first_dir, 0).str;
+		u8 type = find_mod_dir(next_path, out_dir);
+		lt_mfree(alloc, next_path);
+		return type;
+	}
+
+	if (dll_present) {
+		*out_dir = strdup(path);
+		return DIR_ROOT;
+	}
+
+	return DIR_UNKN;
+}
+
 int main(int argc, char** argv) {
 	LT_DEBUG_INIT();
 
+	lt_err_t err;
+
 	b8 help = 0;
-	b8 color = 0;
 	b8 force = 0;
 
 	char* profile_path = ".";
 
 	lt_darr(char*) args = lt_darr_create(char*, 32, alloc);
-	lt_arg_iterator_t arg_it = lt_arg_iterator_create(argc, argv);
-	while (lt_arg_next(&arg_it)) {
-		if (lt_arg_flag(&arg_it, 'h', CLSTR("help"))) {
+
+	lt_foreach_arg(arg, argc, argv) {
+		if (lt_arg_flag(arg, 'h', CLSTR("help"))) {
 			help = 1;
 			continue;
 		}
 
-		if (lt_arg_flag(&arg_it, 'v', CLSTR("verbose"))) {
+		if (lt_arg_flag(arg, 'v', CLSTR("verbose"))) {
 			verbose = 1;
 			continue;
 		}
 
-		if (lt_arg_flag(&arg_it, 'c', CLSTR("color"))) {
+		if (lt_arg_flag(arg, 'c', CLSTR("color"))) {
 			color = 1;
 			continue;
 		}
 
-		if (lt_arg_str(&arg_it, 'C', CLSTR("profile"), &profile_path))
+		if (lt_arg_str(arg, 'C', CLSTR("profile"), &profile_path))
 			continue;
 
-		if (lt_arg_flag(&arg_it, 0, CLSTR("force"))) {
+		if (lt_arg_flag(arg, 0, CLSTR("force"))) {
 			force = 1;
 			continue;
 		}
 
-		lt_darr_push(args, *arg_it.it);
+		lt_darr_push(args, *arg->it);
 	}
 
 	if (lt_darr_count(args) == 0 || help) {
@@ -284,7 +480,7 @@ int main(int argc, char** argv) {
 			"  lmodorg remove NAMES...    Permanently delete mods NAMES.\n"
 			"  lmodorg enable NAMES...    Enable mods NAMES.\n"
 			"  lmodorg disable NAMES...   Disable mods NAMES.\n"
-			"  lmodorg install NAME PATH  Install archive at PATH to new mod NAME.\n"
+			"  lmodorg install PATH       Install the archive at PATH.\n"
 			"  lmodorg mods               List installed mods.\n"
 			"  lmodorg active             List active mods.\n"
 			"  lmodorg sort               Sort load order with LOOT.\n"
@@ -292,12 +488,7 @@ int main(int argc, char** argv) {
 		return 0;
 	}
 
-	lt_err_t err;
-
-	if (chdir(profile_path) != 0)
-		lt_ferrf("%s: %s\n", profile_path, lt_os_err_str());
-
-	lstr_t conf_path = CLSTR("profile.conf");
+	lstr_t conf_path = lt_lsbuild(alloc, "%s/profile.conf", profile_path);
 	lstr_t conf_data;
 	if ((err = lt_freadallp(conf_path, &conf_data, alloc)))
 		lt_ferrf("failed to read '%S': %s\n", conf_path, lt_os_err_str());
@@ -309,8 +500,9 @@ int main(int argc, char** argv) {
 
 	lt_conf_t* mods_cf = lt_conf_array(&cf, CLSTR("mods"));
 
-	char* root_path = lt_cstr_from_lstr(lt_conf_str(&cf, CLSTR("game_root")), alloc);
-	char* mods_path = "mods";
+	char* root_path = lt_lstos(lt_conf_str(&cf, CLSTR("game_root")), alloc);
+	char* mods_path = lt_lsbuild(alloc, "%s/mods%c", profile_path, 0).str;
+	char* output_path = lt_lsbuild(alloc, "%s/output%c", profile_path, 0).str;
 
 	mods_init();
 
@@ -322,8 +514,8 @@ int main(int argc, char** argv) {
 		if (dir_mounted(root_path))
 			lt_ferrf("an lmodorg vfs is already mounted in '%s'\n", root_path);
 
-		copy_profile_configs(&cf);
-		vfs_mount(argv[0], root_path, mods, "output");
+		copy_profile_configs(lt_lsfroms(profile_path), &cf);
+		vfs_mount(argv[0], root_path, mods, output_path);
 
 		lt_term_init(0);
 		lt_printf("vfs mounted, press ctrl+d to quit.\n");
@@ -343,22 +535,21 @@ int main(int argc, char** argv) {
 			lt_ferrf("expected a name after 'new'\n");
 
 		for (usz i = 1; i < lt_darr_count(args); ++i) {
-			lstr_t arg = lt_lstr_from_cstr(args[i]);
+			lstr_t arg = lt_lsfroms(args[i]);
 
 			if (mod_exists(avail_mods, arg)) {
 				lt_werrf("mod '%S' already exists, skipping...\n");
 				continue;
 			}
 
-			char* path = lt_lstr_build(alloc, "%s/%S%c", mods_path, arg, 0).str;
+			lstr_t path = lt_lsbuild(alloc, "%s/%s", mods_path, args[i]);
+			err = lt_mkdir(path);
+			lt_mfree(alloc, path.str);
 
-			int res = mkdir(path, 0755);
-			if (res < 0) {
-				lt_werrf("failed to create directory '%s': %s\n", path, lt_os_err_str());
-				lt_mfree(alloc, path);
+			if (err != LT_SUCCESS) {
+				lt_werrf("failed to create '%S': %S\n", path, lt_err_str(err));
 				continue;
 			}
-			lt_mfree(alloc, path);
 
 			if (mod_enabled(modlist, arg)) {
 				if (verbose)
@@ -383,14 +574,14 @@ int main(int argc, char** argv) {
 			lt_ferrf("expected a name after 'remove'\n");
 
 		for (usz i = 1; i < lt_darr_count(args); ++i) {
-			char* path = lt_lstr_build(alloc, "%s/%s%c", mods_path, args[i], 0).str;
+			char* path = lt_lsbuild(alloc, "%s/%s%c", mods_path, args[i], 0).str;
 
 			int res = rmdir_recursive(path);
 			if (res < 0)
 				lt_werrf("failed to remove '%s': %s\n", path, lt_os_err_str());
 			lt_mfree(alloc, path);
 
-			lt_conf_erase_str(mods_cf, lt_lstr_from_cstr(args[i]), alloc);
+			lt_conf_erase_str(mods_cf, lt_lsfroms(args[i]), alloc);
 		}
 
 		update_config(conf_path, &cf);
@@ -404,7 +595,7 @@ int main(int argc, char** argv) {
 			lt_ferrf("expected a name after 'enable'\n");
 
 		for (usz i = 1; i < lt_darr_count(args); ++i) {
-			lstr_t arg = lt_lstr_from_cstr(args[i]);
+			lstr_t arg = lt_lsfroms(args[i]);
 
 			if (!mod_exists(avail_mods, arg)) {
 				lt_werrf("mod '%S' is not present in mods directory, skipping...\n");
@@ -433,7 +624,7 @@ int main(int argc, char** argv) {
 			lt_ferrf("expected a name after 'disable'\n");
 
 		for (usz i = 1; i < lt_darr_count(args); ++i)
-			lt_conf_erase_str(mods_cf, lt_lstr_from_cstr(args[i]), alloc);
+			lt_conf_erase_str(mods_cf, lt_lsfroms(args[i]), alloc);
 
 		update_config(conf_path, &cf);
 	}
@@ -478,8 +669,52 @@ int main(int argc, char** argv) {
 	else if (strcmp(args[0], "install") == 0) {
 		if (dir_mounted(root_path) && !force)
 			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
+		if (lt_darr_count(args) < 3)
+			lt_ferrf("expected two arguments after 'install'\n");
 
-		lt_ferrf("command not implemented\n");
+		if (mod_exists(avail_mods, lt_lsfroms(args[1])))
+			lt_ferrf("mod '%s' already exists\n", args[1]);
+
+		char* out_path = lt_lsbuild(alloc, "%s/%s%c", mods_path, args[1], 0).str;
+
+		if ((err = lt_mkdir(lt_lsfroms(out_path))))
+			lt_ferrf("failed to create mod directory '%s'\n", out_path);
+
+		char* mod_path = NULL;
+		u8 mod_type = find_mod_dir(args[2], &mod_path);
+		if (mod_type == DIR_UNKN)
+			lt_ferrf("failed to identify mod type; manual installation required\n");
+
+		switch (mod_type) {
+		case DIR_FOMOD:
+			lt_printf("identified '/%s' as fomod root\n", mod_path);
+
+			if (dir_mounted(root_path))
+				lt_ferrf("an lmodorg vfs is already mounted in '%s'\n", root_path);
+
+			vfs_mount(argv[0], root_path, mods, out_path);
+			int res = fomod_install(mod_path, out_path);
+			vfs_unmount();
+
+			if (res < 0) {
+				rmdir_recursive(out_path);
+				lt_ferrf("failed to install mod\n");
+			}
+			break;
+
+		case DIR_ROOT:
+			lt_printf("identified '/%s' as mod root\n", mod_path);
+			install_root(mod_path, out_path);
+			break;
+
+		case DIR_DATA:
+			lt_printf("identified '/%s' as data directory\n", mod_path);
+			install_data(mod_path, out_path);
+			break;
+		}
+
+		lt_mfree(alloc, out_path);
+		lt_mfree(alloc, mod_path);
 	}
 
 	else if (strcmp(args[0], "sort") == 0) {
@@ -503,9 +738,12 @@ int main(int argc, char** argv) {
 	lt_darr_destroy(avail_mods);
 	lt_darr_destroy(mods);
 
+	lt_mfree(alloc, output_path);
+	lt_mfree(alloc, mods_path);
 	lt_mfree(alloc, root_path);
 	lt_conf_free(&cf, alloc);
 	lt_mfree(alloc, conf_data.str);
+	lt_mfree(alloc, conf_path.str);
 
 	lt_darr_destroy(args);
 

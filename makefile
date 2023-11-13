@@ -4,7 +4,9 @@ SRC := \
 	src/main.c \
 	src/vfs.c \
 	src/mod.c \
-	src/fs_nocase.c
+	src/fs_nocase.c \
+	src/fs.c \
+	src/fomod.c
 
 LT_PATH := lt
 LT_ENV :=
@@ -15,7 +17,7 @@ CC_WARN := -Wall -Werror -Wno-strict-aliasing -Wno-error=unused-variable -Wno-un
 CC_FLAGS := -I$(LT_PATH)/include/ -std=gnu99 -fmax-errors=3 $(CC_WARN) -mavx2 -masm=intel
 
 ifdef DEBUG
-	CC_FLAGS += -fsanitize=undefined -fsanitize=address -fno-omit-frame-pointer -O0 -g
+	CC_FLAGS += -fsanitize=undefined -fsanitize=address -fno-omit-frame-pointer -O0 -g -DLT_DEBUG=1
 else
 	CC_FLAGS += -O2
 endif

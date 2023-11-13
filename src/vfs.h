@@ -41,6 +41,14 @@ struct  vfs_inode {
 	};
 } vfs_inode_t;
 
+#define VFD_READ		0x0100000000
+#define VFD_WRITE		0x0200000000
+#define VFD_APPEND		0x0400000000
+#define VFD_TRUNC		0x0800000000
+#define VFD_EXCLUSIVE	0x0800000000
+
+typedef i64 vfs_fd_t;
+
 u64 new_inode_id(void);
 
 lt_err_t inode_insert_dirent(usz parent_id, lstr_t name, usz child_id);
