@@ -309,6 +309,9 @@ void make_output_path(char* dir_path) {
 }
 
 void vfs_init(void* usr, struct fuse_conn_info* conn) {
+// 	if (conn->capable & FUSE_CAP_WRITEBACK_CACHE)
+// 		conn->want |= FUSE_CAP_WRITEBACK_CACHE;
+
 	if (conn->capable & FUSE_CAP_SPLICE_WRITE)
 		conn->want |= FUSE_CAP_SPLICE_WRITE;
 	if (conn->capable & FUSE_CAP_SPLICE_READ)
@@ -330,7 +333,7 @@ void vfs_getattr(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (res < 0)
 		fuse_reply_err(req, -res);
 	else
-		fuse_reply_attr(req, &stat_buf, 1.0);
+		fuse_reply_attr(req, &stat_buf, ATTR_TIMEOUT);
 }
 
 void vfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set, struct fuse_file_info* fi) {
@@ -464,10 +467,17 @@ void vfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set, 
 		err = EOPNOTSUPP;
 	}
 
-	if (err)
+	if (err) {
 		fuse_reply_err(req, err);
+		return;
+	}
+
+	struct stat stat_buf;
+	int res = stat_ino(ino, &stat_buf);
+	if (res < 0)
+		fuse_reply_err(req, -res);
 	else
-		fuse_reply_attr(req, attr, ATTR_TIMEOUT);
+		fuse_reply_attr(req, &stat_buf, ATTR_TIMEOUT);
 }
 
 void vfs_getxattr(fuse_req_t req, fuse_ino_t ino, const char* key, size_t size) {
@@ -653,7 +663,22 @@ void vfs_rename(fuse_req_t req, fuse_ino_t ino1, const char* cname1, fuse_ino_t 
 	fuse_reply_err(req, 0);
 }
 
-vfs_fd_t open_child(fuse_ino_t ino, char* cname, int flags, mode_t mode) {
+void redirect_to_output(usz id) {
+	vfs_inode_t* inode = &ino_tab[id];
+	if (inode->mod == output_mod)
+		return;
+
+	char* cpath_dir = lt_lstos(lt_lsdirname(lt_lsfroms(inode->real_path)), alloc);
+	make_output_path(cpath_dir);
+
+	if (copyat_nocase(inode->mod->rootfd, inode->real_path, output_mod->rootfd, inode->real_path) < 0)
+		lt_werrf("failed to copy '%s'(%uz) to output directory\n", inode->real_path, id);
+
+	inode->mod = output_mod;
+	lt_mfree(alloc, cpath_dir);
+}
+
+int open_child(fuse_ino_t ino, char* cname, int flags, mode_t mode) {
 	LT_ASSERT(!(flags & __O_PATH));
 	LT_ASSERT(!(flags & O_NOFOLLOW));
 	LT_ASSERT(!(flags & O_NOCTTY));
@@ -687,8 +712,8 @@ vfs_fd_t open_child(fuse_ino_t ino, char* cname, int flags, mode_t mode) {
 	}
 
 	if (flags & O_APPEND) {
-		lt_werrf("masked O_APPEND\n");
-		flags &= ~O_APPEND;
+// 		lt_werrf("masked O_APPEND\n");
+// 		flags &= ~O_APPEND;
 		vflags |= VFD_APPEND;
 		*flag_it++ = 'A';
 	}
@@ -703,52 +728,53 @@ vfs_fd_t open_child(fuse_ino_t ino, char* cname, int flags, mode_t mode) {
 		*flag_it++ = 'E';
 	}
 
+	vfs_inode_t* inode = &ino_tab[ino];
+
 	if (cname != NULL) {
-		if (ino_tab[ino].type != VI_DIR)
+		if (inode->type != VI_DIR)
 			return -ENOTDIR;
 
-		make_output_path(ino_tab[ino].real_path);
-		char* real_path = lt_lsbuild(alloc, "%s/%s%c", ino_tab[ino].real_path, cname, 0).str;
+		lstr_t name = lt_lsfroms(cname);
 
-// 		lt_werrf("opened '%s' with flags '%SC'\n", real_path, lt_lsfrom_range(flag_buf, flag_it));
+		usz child_id = inode_find_dirent(ino, name);
+		if (child_id == ID_INVAL) {
+			make_output_path(inode->real_path);
+			char* real_path = lt_lsbuild(alloc, "%s/%s%c", inode->real_path, cname, 0).str;
 
-		int res = openat_nocase(output_mod->rootfd, real_path, flags|O_CREAT, mode);
-		if (res < 0)
-			return res;
+			lt_werrf("creating '%s' with flag '%SC'\n", real_path, lt_lsfrom_range(flag_buf, flag_it));
 
-		usz child_id = inode_register(VI_REG, output_mod, real_path);
-		inode_insert_dirent(ino, lt_lsfroms(cname), child_id);
-		inode_open(child_id);
-		return res;
+			int fd = openat_nocase(output_mod->rootfd, real_path, flags|O_CREAT, mode);
+			if (fd < 0) {
+				lt_werrf("creating '%s' with flags '%S' failed\n", real_path, lt_lsfrom_range(flag_buf, flag_it));
+				lt_mfree(alloc, real_path);
+				return fd;
+			}
+
+			child_id = inode_register(VI_REG, output_mod, real_path);
+			inode_insert_dirent(ino, name, child_id);
+
+			inode_open(child_id);
+			return fd;
+		}
+
+		ino = child_id;
 	}
 
 	if (ino_tab[ino].type == VI_DIR)
 		return -EISDIR;
 
 	if (vflags & VFD_WRITE) {
-		if (ino_tab[ino].mod != output_mod) {
-			char* cpath_dir = lt_lstos(lt_lsdirname(lt_lsfroms(ino_tab[ino].real_path)), alloc);
-			make_output_path(cpath_dir);
-
-			if (copyat_nocase(ino_tab[ino].mod->rootfd, ino_tab[ino].real_path, output_mod->rootfd, ino_tab[ino].real_path) < 0)
-				lt_werrf("failed to copy '%s'(%uq) to output directory\n", ino_tab[ino].real_path, ino);
-
-			ino_tab[ino].mod = output_mod;
-			lt_mfree(alloc, cpath_dir);
-		}
-
-// 		lt_werrf("opened '%s' with flags '%S'\n", ino_tab[ino].real_path, lt_lsfrom_range(flag_buf, flag_it));
+		redirect_to_output(ino);
 	}
 	else if (!(vflags & VFD_READ)) {
 		lt_werrf("vfs_open called with unsupported flags\n");
 		return -EOPNOTSUPP;
 	}
-// 	else
-// 		lt_werrf("opened '%s' with flags '%S'\n", ino_tab[ino].real_path, lt_lsfrom_range(flag_buf, flag_it));
 
-	int fd = openat_nocase(ino_tab[ino].mod->rootfd, ino_tab[ino].real_path, flags, 0);
-	if (fd >= 0)
-		inode_open(ino);
+	int fd = openat_nocase(inode->mod->rootfd, inode->real_path, flags, 0);
+	if (fd < 0)
+		return fd;
+	inode_open(ino);
 	return fd;
 }
 
@@ -756,23 +782,20 @@ void vfs_create(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode, 
 	if (verbose)
 		lt_ierrf("vfs_create called for '%s'(%uq)/'%s'\n", ino_tab[ino].real_path, ino, cname);
 
-	usz child_id = inode_find_dirent(ino, lt_lsfroms((char*)cname));
-	if (child_id != ID_INVAL)
-		cname = NULL;
-
-	vfs_fd_t fd = open_child(ino, (char*)cname, fi->flags, mode);
+	int fd = open_child(ino, (char*)cname, fi->flags, mode);
 	if (fd < 0) {
-		fuse_reply_err(req, (int)-fd);
+		fuse_reply_err(req, -(int)fd);
 		return;
 	}
-	fi->fh = fd;
 
-	child_id = inode_find_dirent(ino, lt_lsfroms((char*)cname));
+	usz child_id = inode_find_dirent(ino, lt_lsfroms((char*)cname));
 	LT_ASSERT(child_id != ID_INVAL);
 
 	struct fuse_entry_param ent;
 	lookup_ino(child_id, &ent);
-	inode_open(child_id);
+	fi->fh = fd;
+// 	fi->parallel_direct_writes = 1;
+// 	fi->keep_cache = 1;
 	fuse_reply_create(req, &ent, fi);
 }
 
@@ -780,12 +803,15 @@ void vfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	if (verbose)
 		lt_ierrf("vfs_open called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
-	vfs_fd_t fd = open_child(ino, NULL, fi->flags, 0);
+	int fd = open_child(ino, NULL, fi->flags, 0);
 	if (fd < 0) {
-		fuse_reply_err(req, (int)-fd);
+		fuse_reply_err(req, -(int)fd);
 		return;
 	}
+
 	fi->fh = fd;
+// 	fi->parallel_direct_writes = 1;
+// 	fi->keep_cache = 1;
 	fuse_reply_open(req, fi);
 }
 

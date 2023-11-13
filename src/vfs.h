@@ -43,9 +43,10 @@ struct  vfs_inode {
 
 #define VFD_READ		0x0100000000
 #define VFD_WRITE		0x0200000000
+#define VFD_MODE		0x0300000000
 #define VFD_APPEND		0x0400000000
 #define VFD_TRUNC		0x0800000000
-#define VFD_EXCLUSIVE	0x0800000000
+#define VFD_EXCLUSIVE	0x1000000000
 
 typedef i64 vfs_fd_t;
 
