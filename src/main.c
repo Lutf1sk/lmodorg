@@ -485,6 +485,7 @@ int main(int argc, char** argv) {
 			"  lmodorg active             List active mods.\n"
 			"  lmodorg sort               Sort load order with LOOT.\n"
 		);
+		lt_darr_destroy(args);
 		return 0;
 	}
 
