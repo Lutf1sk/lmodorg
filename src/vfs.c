@@ -309,9 +309,6 @@ void make_output_path(char* dir_path) {
 }
 
 void vfs_init(void* usr, struct fuse_conn_info* conn) {
-// 	if (conn->capable & FUSE_CAP_WRITEBACK_CACHE)
-// 		conn->want |= FUSE_CAP_WRITEBACK_CACHE;
-
 	if (conn->capable & FUSE_CAP_SPLICE_WRITE)
 		conn->want |= FUSE_CAP_SPLICE_WRITE;
 	if (conn->capable & FUSE_CAP_SPLICE_READ)
@@ -383,7 +380,6 @@ void vfs_setattr(fuse_req_t req, fuse_ino_t ino, struct stat* attr, int to_set, 
 			lt_ierrf("SETATTR_SIZE\n");
 		LT_ASSERT(inode->mod == output_mod);
 		LT_ASSERT(fi != NULL);
-// 		lt_werrf("truncating '%s'(%uq) to %uq bytes\n", ino_tab[ino].real_path, ino, attr->st_size);
 
 		if (ftruncate(fi->fh, attr->st_size) < 0) {
 			fuse_reply_err(req, errno);
@@ -741,11 +737,8 @@ int open_child(fuse_ino_t ino, char* cname, int flags, mode_t mode) {
 			make_output_path(inode->real_path);
 			char* real_path = lt_lsbuild(alloc, "%s/%s%c", inode->real_path, cname, 0).str;
 
-			lt_werrf("creating '%s' with flag '%SC'\n", real_path, lt_lsfrom_range(flag_buf, flag_it));
-
 			int fd = openat_nocase(output_mod->rootfd, real_path, flags|O_CREAT, mode);
 			if (fd < 0) {
-				lt_werrf("creating '%s' with flags '%S' failed\n", real_path, lt_lsfrom_range(flag_buf, flag_it));
 				lt_mfree(alloc, real_path);
 				return fd;
 			}
@@ -794,8 +787,6 @@ void vfs_create(fuse_req_t req, fuse_ino_t ino, const char* cname, mode_t mode, 
 	struct fuse_entry_param ent;
 	lookup_ino(child_id, &ent);
 	fi->fh = fd;
-// 	fi->parallel_direct_writes = 1;
-// 	fi->keep_cache = 1;
 	fuse_reply_create(req, &ent, fi);
 }
 
@@ -810,8 +801,6 @@ void vfs_open(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 	}
 
 	fi->fh = fd;
-// 	fi->parallel_direct_writes = 1;
-// 	fi->keep_cache = 1;
 	fuse_reply_open(req, fi);
 }
 
@@ -820,8 +809,6 @@ void vfs_release(fuse_req_t req, fuse_ino_t ino, struct fuse_file_info* fi) {
 		lt_ierrf("vfs_release called for '%s'(%uq)\n", ino_tab[ino].real_path, ino);
 
 	LT_ASSERT(ino_tab[ino].type == VI_REG);
-
-// 	lt_werrf("closed '%s'\n", ino_tab[ino].real_path);
 
 	close(fi->fh);
 	inode_close(ino, 1);
@@ -838,8 +825,6 @@ void vfs_read(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct fus
 	buf.buf[0].fd = (int)fi->fh;
 	buf.buf[0].pos = off;
 
-// 	lt_werrf("read of size %uz from '%s'\n", size, ino_tab[ino].real_path);
-
 	fuse_reply_data(req, &buf, FUSE_BUF_SPLICE_MOVE);
 }
 
@@ -852,8 +837,6 @@ void vfs_write(fuse_req_t req, fuse_ino_t ino, const char* buf, size_t size, off
 		fuse_reply_err(req, errno);
 		return;
 	}
-
-// 	lt_werrf("wrote %uz out of %uz bytes to '%s'\n", res, size, ino_tab[ino].real_path);
 
 	fuse_reply_write(req, res);
 }
@@ -868,8 +851,6 @@ void vfs_write_buf(fuse_req_t req, fuse_ino_t ino, struct fuse_bufvec* in_buf, o
 	out_buf.buf[0].pos = off;
 
 	ssize_t res = fuse_buf_copy(&out_buf, in_buf, 0);
-
-// 	lt_werrf("wrote %uz out of %uz bytes to '%s'\n", res, fuse_buf_size(in_buf), ino_tab[ino].real_path);
 
 	if (res < 0)
 		fuse_reply_err(req, -res);
