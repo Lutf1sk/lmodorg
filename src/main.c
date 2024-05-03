@@ -474,7 +474,7 @@ int main(int argc, char** argv) {
 			"  lmodorg mods               List installed mods.\n"
 			"  lmodorg active             List active mods.\n"
 			"  lmodorg sort               Sort load order with LOOT.\n"
-			"  lmodorg autocreate         Generate autocreate lists without mounting.\n"
+			"  lmodorg autocreate         Generate autocreate lists without mounting a VFS.\n"
 		);
 		lt_darr_destroy(args);
 		return 0;
@@ -517,9 +517,9 @@ int main(int argc, char** argv) {
 			lt_ferrf("an lmodorg vfs is already mounted in '%s'\n", root_path);
 		}
 
-		copy_profile_configs(lt_lsfroms(profile_path), &cf);
-
 		autocreate_list_files(lt_lsfroms(profile_path), &cf, data_dirs);
+
+		copy_profile_configs(lt_lsfroms(profile_path), &cf);
 
 		vfs_mount(argv[0], root_path, mods, output_path);
 

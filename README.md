@@ -31,15 +31,16 @@ commands:
   lmodorg mods               List installed mods.
   lmodorg active             List active mods.
   lmodorg sort               Sort load order with LOOT.
+  lmodorg autocreate         Generate autocreate lists without mounting a VFS.
 ```
 
 To start lmodorg, run:
 ```
 lmodorg mount
 ```
-This first copies all config files found in ```copy_files []```, then builds the VFS from the active mods (```mods []```) and mounts it over the game directory (```game_root "/Path/To/Game"```).
+This first generates any configured `loadorder.txt`, `plugins.txt` or `archives.txt` files, then copies all config files found in `copy_files []`, then lastly builds the VFS from the active mods (`mods []`) and mounts it over the game directory (`game_root "/Path/To/Game"`).
 
-Any edits made to the filesystem will be redirected to the output directory, which by default is located in ```<PROFILE>/output```.
+Any edits made to the filesystem will be redirected to the output directory, which by default is located in `<PROFILE>/output`.
 Be aware that this means that file deletions to the VFS will not be permanent unless the file is already overwritten by the output mod.
 
 ## Build
@@ -49,7 +50,7 @@ Be aware that this means that file deletions to the VFS will not be permanent un
 - GCC or clang
 - GNU make
 
-Clone the repository, then run make. Use ```DEBUG=1``` to build with debug symbols, as well as ASan and UBSan.
+Clone the repository, then run make. Use `DEBUG=1` to build with debug symbols, as well as ASan and UBSan.
 
 ```
 git clone --recursive https://github.com/Lutf1sk/lmodorg/
