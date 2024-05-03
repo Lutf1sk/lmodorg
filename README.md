@@ -6,7 +6,7 @@ It works similarly to Mod Organizer 2, but unlike MO2, it has a full ("real") vi
 
 This means no more setting up of specific VFS executables or restarting multiple times to run DynDOLOD and Nemesis, just mount the VFS and do anything you want in it.
 
-lmodorg also manages the *entire* game folder and not just ```/Data```, and therefore allows installing mods like SKSE, ENBs and Engine Fixes in a managed way while keeping your real game completely clean.
+lmodorg also manages the entire game folder and not just ```/Data```, and allows installing mods like SKSE, ENBs and Engine Fixes in a managed way while keeping your real game clean.
 
 ## Usage
 lmodorg reads the profile from ```profile.conf```, either in the current working directory or somewhere else with ```-C <PATH>```.

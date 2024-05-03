@@ -2,3 +2,5 @@
 /**/*.o
 /**/*.bak
 /bin/
+/skyrim
+/test-*
