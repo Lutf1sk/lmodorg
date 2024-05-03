@@ -30,7 +30,7 @@ void mods_terminate(void) {
 
 lt_err_t mod_register(mod_t* mod) {
 	usz count = lt_darr_count(mod_tab);
-	mod_t** at = lookup_nearest_mod(mod_tab, count, mod->name);
+	mod_t** at = lookup_nearest_mod(count, mod_tab, mod->name);
 
 	if (at < mod_tab + count && mod_is_equal(*at, mod->name))
 		lt_ferrf("redefinition of mod '%S'\n", mod->name);
@@ -41,7 +41,7 @@ lt_err_t mod_register(mod_t* mod) {
 }
 
 mod_t* mod_find(lstr_t name) {
-	mod_t** pptr = lookup_mod(mod_tab, lt_darr_count(mod_tab), name);
+	mod_t** pptr = lookup_mod(lt_darr_count(mod_tab), mod_tab, name);
 	if (pptr == NULL)
 		return NULL;
 	return *pptr;
