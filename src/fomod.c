@@ -1221,16 +1221,14 @@ void path_dos2unix(lstr_t str) {
 			*it = '/';
 }
 
-int fomod_install(char* in_path, char* out_path) {
+int fomod_install(char* in_path, char* out_path, char* root_data_path) {
 	fomod_t fomod = { 0 };
 
-	char* data_path = lt_lstos(lt_lsdirname(lt_lsfroms(out_path)), alloc);
-	fomod.data_fd = open(data_path, O_RDONLY|O_DIRECTORY);
+	fomod.data_fd = open(root_data_path, O_RDONLY|O_DIRECTORY);
 	if (fomod.data_fd < 0) {
-		lt_werrf("failed to open data directory '%s': %s\n", data_path, lt_os_err_str());
+		lt_werrf("failed to open data directory '%s': %s\n", root_data_path, lt_os_err_str());
 		return -1;
 	}
-	lt_mfree(alloc, data_path);
 
 	int ret = -1;
 
@@ -1267,6 +1265,7 @@ int fomod_install(char* in_path, char* out_path) {
 		lt_printf("installing file '%S' to '%S'\n", file->path, file->install_path);
 
 		lstr_t out_file_path = lt_lsbuild(alloc, "%s/%S", out_path, file->install_path);
+		ls_rebuild_path_case(out_file_path);
 
 		lt_err_t err = lt_mkpath(lt_lsdirname(out_file_path));
 		if (err != LT_SUCCESS) {
@@ -1276,6 +1275,7 @@ int fomod_install(char* in_path, char* out_path) {
 		}
 
 		lstr_t in_file_path = lt_lsbuild(alloc, "%s/%S", in_path, file->path);
+		ls_rebuild_path_case(in_file_path);
 
 		if ((err = lt_fcopyp(in_file_path, out_file_path, copy_buf, COPY_BUFSZ, alloc)))
 			lt_werrf("failed to copy '%s': %S\n", in_path, lt_err_str(err));
@@ -1293,6 +1293,7 @@ int fomod_install(char* in_path, char* out_path) {
 		lt_printf("installing directory '%S' to '%S'\n", dir->path, dir->install_path);
 
 		lstr_t out_dir_path = lt_lsbuild(alloc, "%s/%S", out_path, dir->install_path);
+		ls_rebuild_path_case(out_dir_path);
 
 		lt_err_t err = lt_mkpath(lt_lsdirname(out_dir_path));
 		if (err != LT_SUCCESS) {
@@ -1302,8 +1303,9 @@ int fomod_install(char* in_path, char* out_path) {
 		}
 
 		lstr_t in_dir_path = lt_lsbuild(alloc, "%s/%S", in_path, dir->path);
+		ls_rebuild_path_case(in_dir_path);
 
-		if ((err = lt_dcopyp(in_dir_path, out_dir_path, copy_buf, COPY_BUFSZ, alloc)))
+		if ((err = lt_dcopyp(in_dir_path, out_dir_path, copy_buf, COPY_BUFSZ, LT_DCOPY_MERGE|LT_DCOPY_OVERWRITE_FILES, alloc)))
 			lt_werrf("failed to copy '%S' to '%S': %S\n", in_dir_path, out_dir_path, lt_err_str(err));
 
 		lt_mfree(alloc, in_dir_path.str);

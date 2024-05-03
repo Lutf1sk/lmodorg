@@ -73,6 +73,14 @@ int rebuild_path_case(char* path) {
 	return res;
 }
 
+int ls_rebuild_path_case(lstr_t path) {
+	char* cstr = lt_lstos(path, alloc);
+	int res = rebuild_path_case(cstr);
+	memcpy(path.str, cstr, path.len);
+	lt_mfree(alloc, cstr);
+	return res;
+}
+
 static
 int openat_errno(int fd, char* path, int flags, mode_t mode) {
 	int rfd = openat(fd, path, flags, mode);

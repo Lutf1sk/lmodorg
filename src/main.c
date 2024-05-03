@@ -305,7 +305,7 @@ b8 dir_mounted(char* path) {
 lt_err_t install_root(lstr_t in_path, lstr_t out_path) {
 	lt_err_t err;
 
-	if ((err = lt_dcopyp(in_path, out_path, NULL, 0, alloc))) {
+	if ((err = lt_dcopyp(in_path, out_path, NULL, 0, LT_DCOPY_MERGE, alloc))) {
 		lt_werrf("failed to copy contents of '%S': %S\n", in_path, lt_err_str(err));
 		lt_dremovep(out_path, alloc);
 		return err;
@@ -321,7 +321,7 @@ lt_err_t install_data(lstr_t in_path, lstr_t out_root_path) {
 	lstr_t out_data_path = lt_lsbuild(alloc, "%S/Data", out_root_path);
 	LT_ASSERT(out_data_path.str != NULL);
 
-	if ((err = lt_dcopyp(in_path, out_data_path, NULL, 0, alloc))) {
+	if ((err = lt_dcopyp(in_path, out_data_path, NULL, 0, LT_DCOPY_MERGE, alloc))) {
 		lt_werrf("failed to copy contents of '%S': %S\n", in_path, lt_err_str(err));
 		lt_dremovep(out_root_path, alloc);
 		goto err0;
@@ -342,6 +342,7 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	b8 is_root = 0;
 	b8 is_data = 0;
 	b8 dll_present = 0;
+	b8 has_fomod_dir = 0;
 
 	char first_dir[256] = "";
 	usz file_count = 0;
@@ -361,12 +362,9 @@ u8 find_mod_dir(char* path, char** out_dir) {
 			memcpy(first_dir, name.str, name.len + 1);
 
 		if (lt_lseq_nocase(name, CLSTR("fomod"))) {
-			closedir(dir);
-			*out_dir = strdup(path);
-			return DIR_FOMOD;
+			has_fomod_dir = 1;
 		}
-
-		if (lt_lseq_nocase(name, CLSTR("Meshes")) ||
+		else if (lt_lseq_nocase(name, CLSTR("Meshes")) ||
 			lt_lseq_nocase(name, CLSTR("Scripts")) ||
 			lt_lseq_nocase(name, CLSTR("Source")) ||
 			lt_lseq_nocase(name, CLSTR("Textures")) ||
@@ -382,12 +380,12 @@ u8 find_mod_dir(char* path, char** out_dir) {
 		{
 			is_data = 1;
 		}
-
-		if (lt_lseq_nocase(name, CLSTR("Data")))
+		else if (lt_lseq_nocase(name, CLSTR("Data"))) {
 			is_root = 1;
-
-		if (lt_lssuffix(name, CLSTR(".dll")))
+		}
+		else if (lt_lssuffix(name, CLSTR(".dll"))) {
 			dll_present = 1;
+		}
 	}
 	closedir(dir);
 
@@ -398,6 +396,10 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	if (is_root) {
 		*out_dir = strdup(path);
 		return DIR_ROOT;
+	}
+	if (has_fomod_dir) {
+		*out_dir = strdup(path);
+		return DIR_FOMOD;
 	}
 
 	if (file_count == 1 && first_dir[0] != 0) {
@@ -749,24 +751,33 @@ int main(int argc, char** argv) {
 
 		switch (mod_type) {
 		case DIR_FOMOD:
-			lt_printf("identified '/%s' as fomod root\n", mod_path);
+			lt_printf("identified '%s' as fomod root\n", mod_path);
 
 			if (dir_mounted(root_path)) {
 				lt_ferrf("an lmodorg vfs is already mounted in '%s'\n", root_path);
 			}
 
+			char* root_data_path = lt_lsbuild(alloc, "%s/Data%c", root_path, 0).str;
+			char* out_data_path = lt_lsbuild(alloc, "%s/data%c", out_path, 0).str;
+
+			if ((err = lt_mkdir(lt_lsfroms(out_data_path)))) {
+				lt_ferrf("failed to create data directory '%s': %S\n", out_data_path, lt_err_str(err));
+			}
+
 			vfs_mount(argv[0], root_path, mods, out_path);
-			int res = fomod_install(mod_path, out_path);
+			int res = fomod_install(mod_path, out_data_path, root_data_path);
 			vfs_unmount();
+			lt_mfree(alloc, root_data_path);
 
 			if (res < 0) {
 				lt_dremovep(lt_lsfroms(out_path), alloc);
 				lt_ferrf("failed to install mod\n");
 			}
+			lt_printf("installation complete\n");
 			break;
 
 		case DIR_ROOT:
-			lt_printf("identified '/%s' as mod root\n", mod_path);
+			lt_printf("identified '%s' as mod root\n", mod_path);
 			if ((err = install_root(lt_lsfroms(mod_path), lt_lsfroms(out_path)))) {
 				lt_dremovep(lt_lsfroms(out_path), alloc);
 				lt_ferrf("failed to install mod\n");
@@ -774,7 +785,7 @@ int main(int argc, char** argv) {
 			break;
 
 		case DIR_DATA:
-			lt_printf("identified '/%s' as data directory\n", mod_path);
+			lt_printf("identified '%s' as data directory\n", mod_path);
 			if ((err = install_data(lt_lsfroms(mod_path), lt_lsfroms(out_path)))) {
 				lt_dremovep(lt_lsfroms(out_path), alloc);
 				lt_ferrf("failed to install mod\n");

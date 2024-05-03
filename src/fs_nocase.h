@@ -6,6 +6,7 @@
 
 int rebuild_path_case_at(char* path);
 int rebuild_path_case(char* path);
+int ls_rebuild_path_case(lstr_t path);
 
 int openat_nocase(int fd, char* path, int flags, mode_t mode);
 int fstatat_nocase(int fd, char* path, struct stat* st, int flags);
