@@ -415,6 +415,7 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	return DIR_UNKN;
 }
 
+#include <sys/wait.h>
 
 int main(int argc, char** argv) {
 	LT_DEBUG_INIT();
@@ -701,14 +702,47 @@ int main(int argc, char** argv) {
 			lt_ferrf("mod '%s' already exists\n", args[1]);
 		}
 
+		char* src_path = args[2];
+		lt_stat_t st;
+		if ((err = lt_statp(lt_lsfroms(src_path), &st))) {
+			lt_ferrf("failed to stat '%S': %S\n", src_path, lt_err_str(err));
+		}
+
+		if (st.type == LT_DIRENT_FILE) {
+			char* tmp_src_path = lt_lsbuild(alloc, "%s/tmp/%s%c", profile_path, args[1], 0).str; // !! leaked
+
+			lt_mkpath(lt_lsdirname(lt_lsfroms(tmp_src_path)));
+
+			char* out_switch = lt_lsbuild(alloc, "-o%s%c", tmp_src_path, 0).str;
+
+			pid_t child = fork();
+			if (child == 0) {
+				execl("/bin/7z", "/bin/7z", "x", "-y", out_switch, "--", src_path, (char*)NULL);
+			}
+			if (child < 0) {
+				lt_ferrf("failed to launch '/bin/7zip': %s\n", lt_os_err_str());
+			}
+			int status;
+			wait(&status);
+			if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+				lt_printf("archive extraction successful\n");
+			}
+			else {
+				lt_ferrf("archive extraction failed with code %ud\n", WEXITSTATUS(status));
+			}
+
+			lt_mfree(alloc, out_switch);
+			src_path = tmp_src_path;
+		}
+
 		char* out_path = lt_lsbuild(alloc, "%s/%s%c", mods_path, args[1], 0).str;
 
 		if ((err = lt_mkdir(lt_lsfroms(out_path)))) {
-			lt_ferrf("failed to create mod directory '%s'\n", out_path);
+			lt_ferrf("failed to create mod directory '%s': %S\n", out_path, lt_err_str(err));
 		}
 
 		char* mod_path = NULL;
-		u8 mod_type = find_mod_dir(args[2], &mod_path);
+		u8 mod_type = find_mod_dir(src_path, &mod_path);
 		if (mod_type == DIR_UNKN) {
 			lt_ferrf("failed to identify mod type; manual installation required\n");
 		}
@@ -746,6 +780,9 @@ int main(int argc, char** argv) {
 				lt_ferrf("failed to install mod\n");
 			}
 			break;
+
+		default:
+			lt_ferrf("unreachable state reached, something has gone terribly wrong\n");
 		}
 
 		lt_mfree(alloc, out_path);

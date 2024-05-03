@@ -49,6 +49,7 @@ Be aware that this means that file deletions to the VFS will not be permanent un
 - libfuse 3.0 or higher
 - GCC or clang
 - GNU make
+- 7zip (optional)
 
 Clone the repository, then run make. Use `DEBUG=1` to build with debug symbols, as well as ASan and UBSan.
 
