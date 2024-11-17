@@ -280,11 +280,10 @@ b8 eval_deps(fomod_t* fomod, lt_xml_entity_t* conds) {
 
 	lt_xml_attrib_t* attrib = lt_xml_find_attrib(conds, CLSTR("operator"));
 	if (attrib == NULL) {
-		lt_werrf("dependency missing operator attribute\n");
-		return 0;
+		oper = OP_AND;
+		val = 1;
 	}
-
-	if (lt_lseq(attrib->val, CLSTR("And"))) {
+	else if (lt_lseq(attrib->val, CLSTR("And"))) {
 		oper = OP_AND;
 		val = 1;
 	}

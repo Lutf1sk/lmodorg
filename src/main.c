@@ -330,9 +330,8 @@ lt_err_t install_data(lstr_t in_path, lstr_t out_root_path) {
 	lt_printf("installation complete\n");
 
 err0:	lt_mfree(alloc, out_data_path.str);
-		return err;
+	return err;
 }
-
 #define DIR_UNKN	0
 #define DIR_ROOT	1
 #define DIR_DATA	2
@@ -389,6 +388,10 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	}
 	closedir(dir);
 
+	if (has_fomod_dir) {
+		*out_dir = strdup(path);
+		return DIR_FOMOD;
+	}
 	if (is_data) {
 		*out_dir = strdup(path);
 		return DIR_DATA;
@@ -396,10 +399,6 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	if (is_root) {
 		*out_dir = strdup(path);
 		return DIR_ROOT;
-	}
-	if (has_fomod_dir) {
-		*out_dir = strdup(path);
-		return DIR_FOMOD;
 	}
 
 	if (file_count == 1 && first_dir[0] != 0) {
@@ -715,11 +714,18 @@ int main(int argc, char** argv) {
 
 			lt_mkpath(lt_lsdirname(lt_lsfroms(tmp_src_path)));
 
-			char* out_switch = lt_lsbuild(alloc, "-o%s%c", tmp_src_path, 0).str;
-
 			pid_t child = fork();
 			if (child == 0) {
-				execl("/bin/7z", "/bin/7z", "x", "-y", out_switch, "--", src_path, (char*)NULL);
+				if (lt_lssuffix(lt_lsfroms(src_path), CLSTR(".rar"))) {
+					char* out_switch = lt_lsbuild(alloc, "-op%s%c", tmp_src_path, 0).str;
+					execl("/bin/unrar", "/bin/unrar", "x", "-y", out_switch, "--", src_path, (char*)NULL);
+					lt_mfree(alloc, out_switch);
+				}
+				else {
+					char* out_switch = lt_lsbuild(alloc, "-o%s%c", tmp_src_path, 0).str;
+					execl("/bin/7z", "/bin/7z", "x", "-y", out_switch, "--", src_path, (char*)NULL);
+					lt_mfree(alloc, out_switch);
+				}
 			}
 			if (child < 0) {
 				lt_ferrf("failed to launch '/bin/7zip': %s\n", lt_os_err_str());
@@ -733,7 +739,6 @@ int main(int argc, char** argv) {
 				lt_ferrf("archive extraction failed with code %ud\n", WEXITSTATUS(status));
 			}
 
-			lt_mfree(alloc, out_switch);
 			src_path = tmp_src_path;
 		}
 
@@ -847,6 +852,5 @@ int main(int argc, char** argv) {
 	lt_mfree(alloc, conf_path.str);
 
 	lt_darr_destroy(args);
-
 	return 0;
 }

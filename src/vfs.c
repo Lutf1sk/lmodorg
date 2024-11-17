@@ -242,7 +242,9 @@ int stat_ino(fuse_ino_t ino, struct stat* stat_buf) {
 	struct stat stat_real;
 	int res = fstatat_nocase(ino_tab[ino].mod->rootfd, ino_tab[ino].real_path, &stat_real, AT_SYMLINK_NOFOLLOW);
 	if (res < 0) {
-		lt_werrf("stat failed for [%S] '%s'(%uq): %s\n", ino_tab[ino].mod->name, ino_tab[ino].real_path, ino, strerror(-res));
+		if (-res != ENOENT) {
+			lt_werrf("stat failed for [%S] '%s'(%uq): %s\n", ino_tab[ino].mod->name, ino_tab[ino].real_path, ino, strerror(-res));
+		}
 		return res;
 	}
 
@@ -938,13 +940,15 @@ void vfs_rmdir(fuse_req_t req, fuse_ino_t ino, const char* cname) {
 		return;
 	}
 
-	if (ino_tab[child_id].mod == output_mod) {
+	// this check is commented out because it causes problems when attempting to recreate a deleted
+	// directory. as this behaviour is inconsistent, the current approach should be revised.
+	//if (ino_tab[child_id].mod == output_mod) {
 		int res = unlinkat_nocase(output_mod->rootfd, ino_tab[child_id].real_path, AT_REMOVEDIR);
 		if (res < 0) {
 			fuse_reply_err(req, errno);
 			return;
 		}
-	}
+	//}
 
 	inode_erase_dirent(ino, ent_idx);
 	fuse_reply_err(req, 0);
@@ -1177,7 +1181,7 @@ void print_debug_ls(usz id) {
 void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* output_path) {
 	argv0 = argv0_;
 
-#define INO_TABSZ 4096
+#define INO_TABSZ 65535
 
 	// initialize inode table
 	ino_tab = lt_darr_create(vfs_inode_t, INO_TABSZ, alloc);
