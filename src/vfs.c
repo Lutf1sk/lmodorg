@@ -759,7 +759,9 @@ int open_child(fuse_ino_t ino, char* cname, int flags, mode_t mode) {
 		return -EISDIR;
 
 	if (vflags & VFD_WRITE) {
-		redirect_to_output(ino);
+		if (ino_tab[ino].mod != output_mod) {
+			redirect_to_output(ino);
+		}
 	}
 	else if (!(vflags & VFD_READ)) {
 		lt_werrf("vfs_open called with unsupported flags\n");
