@@ -321,7 +321,7 @@ b8 eval_deps(fomod_t* fomod, lt_xml_entity_t* conds) {
 b8 str_to_bool(lstr_t str) {
 	if (lt_lseq_nocase(str, CLSTR("true")))
 		return 1;
-	else if (lt_lseq_nocase(str, CLSTR("true")))
+	else if (lt_lseq_nocase(str, CLSTR("false")))
 		return 0;
 	else
 		lt_printf("unknown boolean value '%S'\n", str);
