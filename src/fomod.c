@@ -475,7 +475,7 @@ b8 group_selection_validate(u8 group_type, lt_darr(u64) selection) {
 
 	case GRP_SELECTALL:
 		if (lt_darr_count(selection) != 0) {
-			lt_printf("cannot select specific options when all options are required");
+			lt_printf("cannot select specific options when all options are required\n");
 			return 0;
 		}
 		return 1;
