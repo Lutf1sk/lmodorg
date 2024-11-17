@@ -563,7 +563,7 @@ int main(int argc, char** argv) {
 
 			if (mod_enabled(modlist, arg)) {
 				if (verbose) {
-					lt_werrf("mod '%S' is already enabled, skipping...\n");
+					lt_werrf("mod '%S' is already enabled, skipping...\n", arg);
 				}
 				continue;
 			}
@@ -613,12 +613,12 @@ int main(int argc, char** argv) {
 			lstr_t arg = lt_lsfroms(args[i]);
 
 			if (!mod_exists(avail_mods, arg)) {
-				lt_werrf("mod '%S' is not present in mods directory, skipping...\n");
+				lt_werrf("mod '%S' is not present in mods directory, skipping...\n", arg);
 				continue;
 			}
 			if (mod_enabled(modlist, arg)) {
 				if (verbose)
-					lt_werrf("mod '%S' is already enabled, skipping...\n");
+					lt_werrf("mod '%S' is already enabled, skipping...\n", arg);
 				continue;
 			}
 
