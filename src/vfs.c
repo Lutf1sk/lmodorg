@@ -46,6 +46,7 @@ static usz inode_id_free = ID_INVAL;
 
 extern b8 verbose;
 
+lt_mutex_t* vfs_ready_mut;
 struct fuse_session* fuse_session;
 
 static mod_t* output_mod;
@@ -1068,36 +1069,14 @@ const struct fuse_lowlevel_ops fuse_oper = {
 	.rename = vfs_rename,
 };
 
+
+struct fuse_args fuse_args;
+struct fuse_cmdline_opts fuse_opts;
+
 void vfs_thread_proc(void* mountpoint) {
-	char* fuse_argv[] = { argv0, mountpoint, "-f", NULL, };
-	int fuse_argc = sizeof(fuse_argv) / sizeof(*fuse_argv) - 1;
-
-	struct fuse_args fuse_args = FUSE_ARGS_INIT(fuse_argc, fuse_argv);
-	struct fuse_cmdline_opts fuse_opts;
-
-	if (fuse_parse_cmdline(&fuse_args, &fuse_opts) != 0)
-		lt_ferrf("failed to parse libfuse arguments\n");
-
-	fuse_session = fuse_session_new(&fuse_args, &fuse_oper, sizeof(fuse_oper), NULL);
-	if (fuse_session == NULL)
-		lt_ferrf("failed to create libfuse session\n");
-
-	if (fuse_set_signal_handlers(fuse_session) != 0)
-		lt_ferrf("failed to set libfuse signal handlers\n");
-
-	if (fuse_session_mount(fuse_session, fuse_opts.mountpoint) != 0)
-		lt_ferrf("failed to mount virtual filesystem\n");
-
 	int ret = fuse_session_loop(fuse_session);
 	if (verbose)
 		lt_ierrf("libfuse thread returned %id\n", ret);
-
-	fuse_session_unmount(fuse_session);
-	fuse_remove_signal_handlers(fuse_session);
-	fuse_session_destroy(fuse_session);
-
-	free(fuse_opts.mountpoint);
-	fuse_opt_free_args(&fuse_args);
 }
 
 #include <libgen.h>
@@ -1240,16 +1219,41 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 
 	print_debug_ls(ID_ROOT);
 
+	char* fuse_argv[] = { argv0, mountpoint, "-f", NULL, };
+	int fuse_argc = sizeof(fuse_argv) / sizeof(*fuse_argv) - 1;
+
+	fuse_args = (struct fuse_args)FUSE_ARGS_INIT(fuse_argc, fuse_argv);
+	if (fuse_parse_cmdline(&fuse_args, &fuse_opts) != 0)
+		lt_ferrf("failed to parse libfuse arguments\n");
+
+	fuse_session = fuse_session_new(&fuse_args, &fuse_oper, sizeof(fuse_oper), NULL);
+	if (fuse_session == NULL)
+		lt_ferrf("failed to create libfuse session\n");
+
+	if (fuse_set_signal_handlers(fuse_session) != 0)
+		lt_ferrf("failed to set libfuse signal handlers\n");
+
+	if (fuse_session_mount(fuse_session, fuse_opts.mountpoint) != 0)
+		lt_ferrf("failed to mount virtual filesystem\n");
+
 	vfs_thread = lt_thread_create(vfs_thread_proc, mountpoint, alloc);
 	if (!vfs_thread)
 		lt_ferrf("failed to create thread\n");
 }
 
 void vfs_unmount(void) {
-	lt_thread_terminate(vfs_thread);
+	fuse_session_exit(fuse_session);
+	lt_thread_cancel(vfs_thread);
 	while (!lt_thread_join(vfs_thread, alloc))
 		;
 	vfs_thread = NULL;
+
+	fuse_session_unmount(fuse_session);
+	fuse_remove_signal_handlers(fuse_session);
+	fuse_session_destroy(fuse_session);
+
+	free(fuse_opts.mountpoint);
+	fuse_opt_free_args(&fuse_args);
 
 	if (verbose)
 		lt_ierrf("freeing file tree\n");

@@ -28,6 +28,8 @@ char* path_parent(char* path, b8* out_last, usz* out_len) {
 	return it;
 }
 
+#include <lt/io.h>
+
 int rebuild_path_case_at(int fd, char* path) {
 	b8 last;
 	lstr_t name = LSTR(path, 0);
@@ -41,6 +43,8 @@ int rebuild_path_case_at(int fd, char* path) {
 	while ((ent = readdir(d))) {
 		if (!lt_lseq_nocase(name, lt_lsfroms(ent->d_name)))
 			continue;
+
+	//lt_ierrf("%s: %s\n", path, child_path);
 
 		memcpy(name.str, ent->d_name, name.len);
 

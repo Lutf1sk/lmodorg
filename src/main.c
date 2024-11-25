@@ -337,11 +337,14 @@ err0:	lt_mfree(alloc, out_data_path.str);
 #define DIR_DATA	2
 #define DIR_FOMOD	3
 
+#include "fs_nocase.h"
+
 u8 find_mod_dir(char* path, char** out_dir) {
 	b8 is_root = 0;
 	b8 is_data = 0;
 	b8 dll_present = 0;
 	b8 has_fomod_dir = 0;
+	b8 is_valid_fomod = 0;
 
 	char first_dir[256] = "";
 	usz file_count = 0;
@@ -362,6 +365,7 @@ u8 find_mod_dir(char* path, char** out_dir) {
 
 		if (lt_lseq_nocase(name, CLSTR("fomod"))) {
 			has_fomod_dir = 1;
+			is_valid_fomod = fstatat_nocase(dirfd(dir), "fomod/ModuleConfig.xml", NULL, 0) >= 0;
 		}
 		else if (lt_lseq_nocase(name, CLSTR("Meshes")) ||
 			lt_lseq_nocase(name, CLSTR("Scripts")) ||
@@ -388,7 +392,7 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	}
 	closedir(dir);
 
-	if (has_fomod_dir) {
+	if (has_fomod_dir && is_valid_fomod) {
 		*out_dir = strdup(path);
 		return DIR_FOMOD;
 	}
@@ -399,6 +403,10 @@ u8 find_mod_dir(char* path, char** out_dir) {
 	if (is_root) {
 		*out_dir = strdup(path);
 		return DIR_ROOT;
+	}
+	if (has_fomod_dir) {
+		*out_dir = strdup(path);
+		return DIR_FOMOD;
 	}
 
 	if (file_count == 1 && first_dir[0] != 0) {
