@@ -483,6 +483,7 @@ int main(int argc, char** argv) {
 	}
 
 	lstr_t conf_path = lt_lsbuild(alloc, "%s/profile.conf", profile_path);
+
 	lstr_t conf_data;
 	if ((err = lt_freadallp(conf_path, &conf_data, alloc)))
 		lt_ferrf("failed to read '%S': %s\n", conf_path, lt_os_err_str());

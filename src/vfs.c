@@ -1176,7 +1176,7 @@ void print_debug_ls(usz id) {
 	for (usz i = 0; i < lt_darr_count(inode->entries); ++i) {
 		usz entid = inode->entries[i].id;
 		vfs_inode_t* ent = &ino_tab[entid];
-		lt_printf("\t%uz. '%S' ->\t[%S] '%s'(%uz)\n", i, inode->entries[i].name, ent->mod->name, ent->real_path, entid);
+		lt_printf("\t%_6uz %_14S %S\n", entid, ent->mod->name, inode->entries[i].name);
 	}
 }
 
