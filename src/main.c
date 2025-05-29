@@ -481,7 +481,7 @@ int main(int argc, char** argv) {
 			"  lmodorg remove NAMES...    Permanently delete mods NAMES.\n"
 			"  lmodorg enable NAMES...    Enable mods NAMES.\n"
 			"  lmodorg disable NAMES...   Disable mods NAMES.\n"
-			"  lmodorg install PATH       Install the archive at PATH.\n"
+			"  lmodorg install NAME PATH  Install the archive at PATH.\n"
 			"  lmodorg mods               List installed mods.\n"
 			"  lmodorg active             List active mods.\n"
 			"  lmodorg sort               Sort load order with LOOT.\n"
