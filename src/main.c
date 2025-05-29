@@ -724,30 +724,30 @@ int main(int argc, char** argv) {
 
 			lt_mkpath(lt_lsdirname(lt_lsfroms(tmp_src_path)));
 
+			char* exec_path = "/bin/7z";
 			pid_t child = fork();
 			if (child == 0) {
 				if (lt_lssuffix(lt_lsfroms(src_path), CLSTR(".rar"))) {
+					exec_path = "/bin/unrar";
 					char* out_switch = lt_lsbuild(alloc, "-op%s%c", tmp_src_path, 0).str;
-					execl("/bin/unrar", "/bin/unrar", "x", "-y", out_switch, "--", src_path, (char*)NULL);
+					execl(exec_path, exec_path, "x", "-y", out_switch, "--", src_path, (char*)NULL);
 					lt_mfree(alloc, out_switch);
 				}
 				else {
 					char* out_switch = lt_lsbuild(alloc, "-o%s%c", tmp_src_path, 0).str;
-					execl("/bin/7z", "/bin/7z", "x", "-y", out_switch, "--", src_path, (char*)NULL);
+					execl(exec_path, exec_path, "x", "-y", out_switch, "--", src_path, (char*)NULL);
 					lt_mfree(alloc, out_switch);
 				}
 			}
-			if (child < 0) {
-				lt_ferrf("failed to launch '/bin/7zip': %s\n", lt_os_err_str());
-			}
+			if (child < 0)
+				lt_ferrf("failed to launch '%s': %s\n", exec_path, lt_os_err_str());
+
 			int status;
 			wait(&status);
-			if (WIFEXITED(status) && WEXITSTATUS(status) == 0) {
+			if (WIFEXITED(status) && WEXITSTATUS(status) == 0)
 				lt_printf("archive extraction successful\n");
-			}
-			else {
+			else
 				lt_ferrf("archive extraction failed with code %ud\n", WEXITSTATUS(status));
-			}
 
 			src_path = tmp_src_path;
 		}
