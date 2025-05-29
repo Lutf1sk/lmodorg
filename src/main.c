@@ -376,6 +376,7 @@ u8 find_mod_dir(char* path, char** out_dir) {
 			lt_lseq_nocase(name, CLSTR("Video")) ||
 			lt_lseq_nocase(name, CLSTR("Sound")) ||
 			lt_lseq_nocase(name, CLSTR("SKSE")) ||
+			lt_lseq_nocase(name, CLSTR("Shaders")) ||
 			lt_lssuffix(name, CLSTR(".esp")) ||
 			lt_lssuffix(name, CLSTR(".esm")) ||
 			lt_lssuffix(name, CLSTR(".esl")) ||
