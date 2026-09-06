@@ -11,7 +11,6 @@
 #include <lt/ctype.h>
 
 #include <string.h>
-#include <ctype.h>
 
 #include "fs_nocase.h"
 
@@ -1162,7 +1161,7 @@ void print_debug_ls(usz id) {
 void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* output_path) {
 	argv0 = argv0_;
 
-#define INO_TABSZ 65535
+#define INO_TABSZ 65535 * 4
 
 	// initialize inode table
 	ino_tab = lt_darr_create(vfs_inode_t, INO_TABSZ, alloc);
@@ -1216,8 +1215,6 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 	mod_register(output_mod);
 
 	register_dirent(ID_ROOT, output_mod, strdup("."), CLSTR("."), DT_DIR);
-
-	print_debug_ls(ID_ROOT);
 
 	char* fuse_argv[] = { argv0, mountpoint, "-f", NULL, };
 	int fuse_argc = sizeof(fuse_argv) / sizeof(*fuse_argv) - 1;

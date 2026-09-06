@@ -1,0 +1,2 @@
+-I./lt/include
+-std=gnu2x

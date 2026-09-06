@@ -9,7 +9,7 @@ This means no more setting up of specific VFS executables or restarting multiple
 lmodorg also manages the entire game folder and not just ```/Data```, and allows installing mods like SKSE, ENBs and Engine Fixes in a managed way while keeping your real game clean.
 
 ## Usage
-lmodorg reads the profile from ```profile.conf```, either in the current working directory or somewhere else with ```-C <PATH>```.
+lmodorg reads the profile from ```profile.ini```, either in the current working directory or somewhere else with ```-C <PATH>```.
 An example profile can be found in the ```example_profile``` directory.
 
 ```
@@ -30,15 +30,14 @@ commands:
   lmodorg install NAME PATH  Install archive at PATH to new mod NAME.
   lmodorg mods               List installed mods.
   lmodorg active             List active mods.
-  lmodorg sort               Sort load order with LOOT.
-  lmodorg autocreate         Generate autocreate lists without mounting a VFS.
+  lmodorg generate           Generate loadorder files without mounting a VFS.
 ```
 
 To start lmodorg, run:
 ```
 lmodorg mount
 ```
-This first generates any configured `loadorder.txt`, `plugins.txt` or `archives.txt` files, then copies all config files found in `copy_files []`, then lastly builds the VFS from the active mods (`mods []`) and mounts it over the game directory (`game_root "/Path/To/Game"`).
+This first generates any configured `loadorder.txt`, `plugins.txt` or `archives.txt` files, then copies all config files found in `[copy_files]`, then lastly builds the VFS from the active mods (`[mods]`) and mounts it over the game directory (`game="/Path/To/Game"`).
 
 Any edits made to the filesystem will be redirected to the output directory, which by default is located in `<PROFILE>/output`.
 Be aware that this means that file deletions to the VFS will not be permanent unless the file is already overwritten by the output mod.

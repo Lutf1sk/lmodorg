@@ -1,6 +1,5 @@
 #include <lt/io.h>
 #include <lt/mem.h>
-#include <lt/conf.h>
 #include <lt/time.h>
 #include <lt/term.h>
 #include <lt/str.h>
@@ -16,28 +15,31 @@
 #include <libgen.h>
 
 #include "vfs.h"
-#include "fs.h"
 #include "mod.h"
 #include "fomod.h"
 
 #define alloc lt_libc_heap
 
+#include "ini.c"
+
 b8 verbose = 0;
 b8 color = 0;
 
-lt_darr(lstr_t) get_modlist(lt_conf_t* cf) {
+ini_t config;
+char* profile_path;
+
+lt_darr(lstr_t) get_modlist() {
 	lt_darr(lstr_t) mods = lt_darr_create(lstr_t, 32, alloc);
 	LT_ASSERT(mods);
 
-	lt_conf_t* mods_cf = lt_conf_array(cf, CLSTR("mods"));
-	for (usz i = 0; i < mods_cf->child_count; ++i) {
-		lt_conf_t* mod_cf = &mods_cf->children[i];
+	isz section_i = ini_find_section(&config, CLSTR("mods"));
+	if (section_i < 0)
+		return mods;
 
-		if (mod_cf->stype != LT_CONF_STRING) {
-			lt_werrf("non-mod in 'mods' list\n");
-			continue;
-		}
-		lt_darr_push(mods, mod_cf->str_val);
+	ini_section_t* section = &config.sections[section_i];
+	for (ini_line_t* it = section->lines, *end = it + section->line_count; it < end; ++it) {
+		if (it->type == INI_LINE_VALUE && lt_lseq(ini_line_value(&config, it), CLSTR("1")))
+			lt_darr_push(mods, ini_line_key(&config, it));
 	}
 
 	return mods;
@@ -120,33 +122,83 @@ b8 mod_enabled(lt_darr(lstr_t) modlist, lstr_t name) {
 	return 0;
 }
 
-void copy_profile_configs(lstr_t profile_path, lt_conf_t* cf) {
-	lt_conf_t* copy = lt_conf_find_array(cf, CLSTR("copy_files"), NULL);
-	if (copy == NULL)
+#include <lt/strstream.h>
+
+lstr_t expand_path(lstr_t path) {
+	lt_strstream_t ss;
+	lt_strstream_create(&ss, lt_libc_heap);
+
+	char* it = path.str, *end = it + path.len;
+	while (it < end) {
+		if (*it != '$') {
+			lt_strstream_writec(&ss, *it++);
+			continue;
+		}
+		++it;
+
+		if (end - it >= 7 && memcmp(it, "APPDATA", 7) == 0) {
+			lstr_t replacement = ini_find_value(&config, CLSTR("paths"), CLSTR("appdata"));
+			if (!replacement.len) {
+				lt_werrf("path '%S' cannot be expanded, because [paths].appdata has not been set\n", path);
+				return NLSTR(); // !! leaks
+			}
+			lt_strstream_writels(&ss, replacement);
+			it += 7;
+		}
+
+		else if (end - it >= 4 && memcmp(it, "DATA", 4) == 0) {
+			lstr_t replacement = ini_find_value(&config, CLSTR("paths"), CLSTR("data"));
+			if (!replacement.len) {
+				lt_werrf("path '%S' cannot be expanded, because [paths].data has not been set\n", path);
+				return NLSTR(); // !! leaks
+			}
+			lt_strstream_writels(&ss, replacement);
+			it += 4;
+		}
+
+		else if (end - it >= 7 && memcmp(it, "PROFILE", 7) == 0) {
+			lt_strstream_writels(&ss, lt_lsfroms(profile_path));
+			it += 7;
+		}
+
+		else {
+			lt_strstream_writec(&ss, '$');
+		}
+	}
+
+	return ss.str;
+}
+
+
+void copy_profile_configs(void) {
+	isz section_i = ini_find_section(&config, CLSTR("copy_files"));
+	if (section_i < 0)
 		return;
+	ini_section_t* section = &config.sections[section_i];
 
 	usz copy_bufsz = LT_KB(64);
 	char* copy_buf = lt_malloc(alloc, copy_bufsz);
 
-	for (usz i = 0; i < copy->child_count; ++i) {
-		lt_conf_t* link = &copy->children[i];
-		if (link->stype != LT_CONF_OBJECT)
+	for (usz i = 0; i < section->line_count; ++i) {
+		ini_line_t* line = &section->lines[i];
+		if (line->type != INI_LINE_VALUE)
 			continue;
 
-		lstr_t from = lt_conf_str(link, CLSTR("from"));
-		from = lt_lsbuild(alloc, "%S/%S", profile_path, from);
+		lstr_t to   = ini_line_key  (&config, line);
+		lstr_t from = ini_line_value(&config, line);
 
-		lstr_t to = lt_conf_str(link, CLSTR("to"));
+		lstr_t exp_to   = expand_path(to);
+		lstr_t exp_from = expand_path(from);
 
-		lt_file_t* inf = lt_fopenp(from, LT_FILE_R, 0, alloc);
+		lt_file_t* inf = lt_fopenp(exp_from, LT_FILE_R, 0, alloc);
 		if (inf == NULL) {
-			lt_werrf("failed to copy from '%S': %s\n", from, lt_os_err_str());
+			lt_werrf("failed to open '%S' for reading: %s\n", from, lt_os_err_str());
 			continue;
 		}
 
-		lt_file_t* outf = lt_fopenp(to, LT_FILE_W, 0, alloc);
+		lt_file_t* outf = lt_fopenp(exp_to, LT_FILE_W, 0, alloc);
 		if (outf == NULL) {
-			lt_werrf("failed to copy to '%S': %s\n", to, lt_os_err_str());
+			lt_werrf("failed to open '%S' for writing: %s\n", to, lt_os_err_str());
 			continue;
 		}
 
@@ -157,25 +209,14 @@ void copy_profile_configs(lstr_t profile_path, lt_conf_t* cf) {
 			LT_ASSERT(res > 0);
 		}
 
-		lt_mfree(alloc, from.str);
 		lt_fclose(inf, alloc);
 		lt_fclose(outf, alloc);
+
+		lt_printf("copied '%S' to '%S'\n", exp_from, exp_to);
 	}
 
 	lt_mfree(alloc, copy_buf);
 }
-
-#define LIST_LOADORDER 0
-#define LIST_ARCHIVES 1
-#define LIST_PLUGINS 2
-
-lstr_t list_extensions[][4] = {
-	{ CLSTR(".esm"), CLSTR(".esp"), CLSTR(".esl") },
-	{ CLSTR(".bsa") },
-	{ CLSTR(".esp") },
-};
-
-usz list_extension_counts[] = { 3, 1, 1 };
 
 void case_adjust_data_path(lstr_t data_path) {
 	lstr_t parent_path = lt_lsdirname(data_path);
@@ -196,94 +237,102 @@ void case_adjust_data_path(lstr_t data_path) {
 	lt_dclose(dir, alloc);
 }
 
-void build_list_file(lt_file_t* file, lstr_t data_path, u32 type) {
+#define LIST_LOADORDER 0
+#define LIST_ARCHIVES 1
+#define LIST_PLUGINS 2
+
+static
+lstr_t list_extensions[][4] = {
+	{ CLSTR(".esm"), CLSTR(".esp"), CLSTR(".esl") },
+	{ CLSTR(".bsa") },
+	{ CLSTR(".esp") },
+};
+
+static
+usz list_extension_counts[] = { 3, 1, 1 };
+
+static
+lstr_t default_paths[] = {
+	CLSTR("$APPDATA/LoadOrder.txt"),
+	CLSTR("$APPDATA/Archives.txt"),
+	CLSTR("$APPDATA/Plugins.txt"),
+};
+
+static
+lstr_t file_names[] = {
+	CLSTR("LoadOrder.txt"),
+	CLSTR("Archives.txt"),
+	CLSTR("Plugins.txt"),
+};
+
+void build_list_file(lstr_t file_path, lt_darr(lstr_t) data_paths, u32 type) {
 	lstr_t* exts = list_extensions[type];
 	usz ext_count = list_extension_counts[type];
 
-	lt_dir_t* dir = lt_dopenp(data_path, alloc);
-	if (!dir) {
+	if (lt_lseq(file_path, CLSTR("default")))
+		file_path = default_paths[type];
+
+	file_path = expand_path(file_path);
+	if (!file_path.len) {
+		lt_werrf("no valid path provided, skipping generation of '%S'\n", file_names[type]);
 		return;
 	}
 
-	char* prefix = "";
-	if (type == LIST_PLUGINS) {
-		prefix = "*";
+	lt_file_t* file = lt_fopenp(file_path, LT_FILE_W, LT_FILE_PERMIT_R|LT_FILE_PERMIT_W, alloc);
+	if (!file) {
+		lt_werrf("failed to open '%S': %S\n", file_path, lt_os_err_str());
+		return;
 	}
 
-	lt_foreach_dirent(ent, dir) {
-		if (ent->type != LT_DIRENT_FILE) {
+	for (usz i = 0; i < lt_darr_count(data_paths); ++i) {
+		lstr_t data_path = data_paths[i];
+
+		lt_dir_t* dir = lt_dopenp(data_path, alloc);
+		if (!dir)
 			continue;
-		}
-		for (usz i = 0; i < ext_count; ++i) {
-			if (lt_lssuffix(ent->name, exts[i])) goto found;
-		}
-		continue;
 
-	found:
-		lt_fprintf(file, "%s%S\n", prefix, ent->name);
+		char* prefix = "";
+		if (type == LIST_PLUGINS)
+			prefix = "*";
+
+		lt_foreach_dirent(ent, dir) {
+			if (ent->type != LT_DIRENT_FILE)
+				continue;
+
+			for (usz i = 0; i < ext_count; ++i) {
+				if (lt_lssuffix(ent->name, exts[i])) {
+					lt_fprintf(file, "%s%S\n", prefix, ent->name);
+					break;
+				}
+			}
+		}
+
+		lt_dclose(dir, alloc);
 	}
 
-	lt_dclose(dir, alloc);
+	lt_fclose(file, alloc);
+
+	lt_printf("generated '%S'\n", file_path);
 }
 
-void autocreate_list_files(lstr_t profile_path, lt_conf_t* cf, lt_darr(lstr_t) data_dirs) {
-	lt_err_t err;
+void autocreate_list_files(lt_darr(lstr_t) data_dirs) {
+	lstr_t loadorder_path = ini_find_value(&config, CLSTR("generate"), CLSTR("loadorder.txt"));
+	lstr_t plugins_path   = ini_find_value(&config, CLSTR("generate"), CLSTR("plugins.txt"));
+	lstr_t archives_path  = ini_find_value(&config, CLSTR("generate"), CLSTR("archives.txt"));
 
-	lt_conf_t* files = lt_conf_find_array(cf, CLSTR("autocreate"), NULL);
-	if (!files) {
-		return;
-	}
-
-	lstr_t autocreate_path = lt_lsbuild(alloc, "%S/autocreate", profile_path);
-	if ((err = lt_mkdir(autocreate_path)) && err != LT_ERR_EXISTS) {
-		lt_werrf("failed to create directory '%S': %S\n", profile_path, lt_err_str(err));
-		return;
-	}
-
-	for (usz i = 0; i < files->child_count; ++i) {
-		lt_conf_t* file = &files->children[i];
-		if (file->stype != LT_CONF_STRING) {
-			continue;
-		}
-
-		u32 type;
-		if (lt_lseq_nocase(file->str_val, CLSTR("loadorder.txt"))) {
-			type = LIST_LOADORDER;
-		}
-		else if (lt_lseq_nocase(file->str_val, CLSTR("archives.txt"))) {
-			type = LIST_ARCHIVES;
-		}
-		else if (lt_lseq_nocase(file->str_val, CLSTR("plugins.txt"))) {
-			type = LIST_PLUGINS;
-		}
-		else {
-			lt_werrf("unknown resource list '%S'\n", file->str_val);
-			continue;
-		}
-
-		lstr_t create_at = lt_lsbuild(alloc, "%S/%S", autocreate_path, file->str_val);
-
-		lt_printf("generating '%S'...\n", create_at);
-
-		lt_file_t* fp = lt_fopenp(create_at, LT_FILE_W, LT_FILE_PERMIT_R|LT_FILE_PERMIT_W, alloc);
-		if (!fp) {
-			lt_werrf("failed to open '%S': %s\n", create_at, lt_os_err_str());
-			continue;
-		}
-
-		for (usz i = 0; i < lt_darr_count(data_dirs); ++i) {
-			build_list_file(fp, data_dirs[i], type);
-		}
-
-		lt_mfree(alloc, create_at.str);
-	}
+	if (loadorder_path.len)
+		build_list_file(loadorder_path, data_dirs, LIST_LOADORDER);
+	if (plugins_path.len)
+		build_list_file(plugins_path, data_dirs, LIST_PLUGINS);
+	if (archives_path.len)
+		build_list_file(archives_path, data_dirs, LIST_ARCHIVES);
 }
 
-void update_config(lstr_t conf_path, lt_conf_t* cf) {
+void update_config(lstr_t conf_path) {
 	lt_file_t* fp = lt_fopenp(conf_path, LT_FILE_W, 0, alloc);
 	if (!fp)
 		lt_ferrf("failed to update config file: %s\n", lt_os_err_str());
-	LT_ASSERT(lt_conf_write(cf, (lt_write_fn_t)lt_fwrite, fp) >= 0);
+	ini_write(&config, fp);
 	lt_fclose(fp, alloc);
 }
 
@@ -332,6 +381,7 @@ lt_err_t install_data(lstr_t in_path, lstr_t out_root_path) {
 err0:	lt_mfree(alloc, out_data_path.str);
 	return err;
 }
+
 #define DIR_UNKN	0
 #define DIR_ROOT	1
 #define DIR_DATA	2
@@ -427,6 +477,7 @@ u8 find_mod_dir(char* path, char** out_dir) {
 
 #include <sys/wait.h>
 
+
 int main(int argc, char** argv) {
 	LT_DEBUG_INIT();
 
@@ -435,7 +486,7 @@ int main(int argc, char** argv) {
 	b8 help = 0;
 	b8 force = 0;
 
-	char* profile_path = ".";
+	profile_path = ".";
 
 	lt_darr(char*) args = lt_darr_create(char*, 32, alloc);
 
@@ -484,33 +535,33 @@ int main(int argc, char** argv) {
 			"  lmodorg install NAME PATH  Install the archive at PATH.\n"
 			"  lmodorg mods               List installed mods.\n"
 			"  lmodorg active             List active mods.\n"
-			"  lmodorg sort               Sort load order with LOOT.\n"
-			"  lmodorg autocreate         Generate autocreate lists without mounting a VFS.\n"
+			"  lmodorg generate           Generate loadorder files without mounting a VFS.\n"
 		);
 		lt_darr_destroy(args);
 		return 0;
 	}
 
-	lstr_t conf_path = lt_lsbuild(alloc, "%s/profile.conf", profile_path);
+	lstr_t conf_path = lt_lsbuild(alloc, "%s/profile.ini", profile_path);
 
 	lstr_t conf_data;
 	if ((err = lt_freadallp(conf_path, &conf_data, alloc)))
 		lt_ferrf("failed to read '%S': %s\n", conf_path, lt_os_err_str());
 
-	lt_conf_t cf;
-	lt_conf_err_info_t err_info;
-	if ((err = lt_conf_parse(&cf, conf_data.str, conf_data.len, &err_info, alloc)))
-		lt_ferrf("failed to parse config file '%S': %S\n", conf_path, err_info.err_str);
+	config = ini_parse(conf_data);
+	if (config.error)
+		lt_ferrf("failed to parse config file '%S'\n", conf_path);
 
-	lt_conf_t* mods_cf = lt_conf_array(&cf, CLSTR("mods"));
+	isz mods_section_i = ini_find_section(&config, CLSTR("mods"));
+	if (mods_section_i < 0)
+		mods_section_i = ini_add_section(&config, CLSTR("mods"));
 
-	char* root_path = lt_lstos(lt_conf_str(&cf, CLSTR("game_root")), alloc);
+	char* root_path = lt_lstos(ini_find_value(&config, CLSTR("paths"), CLSTR("game")), alloc);
 	char* mods_path = lt_lsbuild(alloc, "%s/mods%c", profile_path, 0).str;
 	char* output_path = lt_lsbuild(alloc, "%s/output%c", profile_path, 0).str;
 
 	mods_init();
 
-	lt_darr(lstr_t) modlist = get_modlist(&cf);
+	lt_darr(lstr_t) modlist = get_modlist();
 	lt_darr(avail_mod_t) avail_mods = get_available_mods(mods_path);
 	lt_darr(mod_t*) mods = get_mods(modlist, avail_mods);
 
@@ -529,9 +580,9 @@ int main(int argc, char** argv) {
 			lt_ferrf("an lmodorg vfs is already mounted in '%s'\n", root_path);
 		}
 
-		autocreate_list_files(lt_lsfroms(profile_path), &cf, data_dirs);
+		autocreate_list_files(data_dirs);
 
-		copy_profile_configs(lt_lsfroms(profile_path), &cf);
+		copy_profile_configs();
 
 		vfs_mount(argv[0], root_path, mods, output_path);
 
@@ -578,13 +629,10 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
-			lt_conf_t new_conf = {
-					.stype = LT_CONF_STRING,
-					.str_val = arg };
-			lt_conf_add_child(mods_cf, &new_conf);
+			ini_add_value(&config, mods_section_i, arg, CLSTR("1"));
 		}
 
-		update_config(conf_path, &cf);
+		update_config(conf_path);
 	}
 
 	else if (strcmp(args[0], "remove") == 0) {
@@ -604,10 +652,10 @@ int main(int argc, char** argv) {
 			}
 			lt_mfree(alloc, path.str);
 
-			lt_conf_erase_str(mods_cf, lt_lsfroms(args[i]), alloc);
+			ini_remove_value(&config, mods_section_i, lt_lsfroms(args[i]));
 		}
 
-		update_config(conf_path, &cf);
+		update_config(conf_path);
 	}
 
 	else if (strcmp(args[0], "enable") == 0) {
@@ -632,13 +680,10 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
-			lt_conf_t new_conf = {
-					.stype = LT_CONF_STRING,
-					.str_val = arg };
-			lt_conf_add_child(mods_cf, &new_conf);
+			ini_set_value(&config, mods_section_i, arg, CLSTR("1"));
 		}
 
-		update_config(conf_path, &cf);
+		update_config(conf_path);
 	}
 
 	else if (strcmp(args[0], "disable") == 0) {
@@ -651,9 +696,9 @@ int main(int argc, char** argv) {
 		}
 
 		for (usz i = 1; i < lt_darr_count(args); ++i)
-			lt_conf_erase_str(mods_cf, lt_lsfroms(args[i]), alloc);
+			ini_set_value(&config, mods_section_i, lt_lsfroms(args[i]), CLSTR("0"));
 
-		update_config(conf_path, &cf);
+		update_config(conf_path);
 	}
 
 	else if (strcmp(args[0], "mods") == 0) {
@@ -815,24 +860,12 @@ int main(int argc, char** argv) {
 		lt_mfree(alloc, mod_path);
 	}
 
-	else if (strcmp(args[0], "sort") == 0) {
+	else if (strcmp(args[0], "generate") == 0) {
 		if (lt_darr_count(args) != 1) {
-			lt_ferrf("command 'sort' takes no arguments\n");
+			lt_ferrf("command 'generate' takes no arguments\n");
 		}
 
-		if (dir_mounted(root_path) && !force) {
-			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
-		}
-
-		lt_ferrf("command not implemented\n");
-	}
-
-	else if (strcmp(args[0], "autocreate") == 0) {
-		if (lt_darr_count(args) != 1) {
-			lt_ferrf("command 'autocreate' takes no arguments\n");
-		}
-
-		autocreate_list_files(lt_lsfroms(profile_path), &cf, data_dirs);
+		autocreate_list_files(data_dirs);
 	}
 
 	else {
@@ -857,7 +890,7 @@ int main(int argc, char** argv) {
 	lt_mfree(alloc, output_path);
 	lt_mfree(alloc, mods_path);
 	lt_mfree(alloc, root_path);
-	lt_conf_free(&cf, alloc);
+	ini_free(&config);
 	lt_mfree(alloc, conf_data.str);
 	lt_mfree(alloc, conf_path.str);
 
