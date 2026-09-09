@@ -13,6 +13,7 @@
 #include <lt/ansi.h>
 
 #include "fs_nocase.h"
+#include "darr.c"
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -46,13 +47,13 @@ struct plugin {
 	lstr_t name;
 	lstr_t description;
 
-	lt_darr(install_t) files;
-	lt_darr(install_t) dirs;
+	arr_t(install_t) files;
+	arr_t(install_t) dirs;
 
-	lt_darr(flag_t) flags;
+	arr_t(flag_t) flags;
 
 	u8 default_type;
-	lt_darr(dep_plugin_type_t) dep_types;
+	arr_t(dep_plugin_type_t) dep_types;
 
 	u8 eval_type;
 	b8 selected;
@@ -63,7 +64,7 @@ struct group {
 	u8 order;
 	u8 type;
 	lstr_t name;
-	lt_darr(plugin_t) plugins;
+	arr_t(plugin_t) plugins;
 } group_t;
 
 typedef
@@ -71,7 +72,7 @@ struct install_step {
 	u8 order;
 	lt_xml_entity_t* visible_cond;
 	lstr_t name;
-	lt_darr(group_t) groups;
+	arr_t(group_t) groups;
 } install_step_t;
 
 typedef
@@ -90,17 +91,17 @@ struct fomod {
 
 	// module
 	lstr_t module_name;
-	lt_darr(install_t) files;
-	lt_darr(install_t) dirs;
-	lt_darr(install_t) install_files;
-	lt_darr(install_t) install_dirs;
+	arr_t(install_t) files;
+	arr_t(install_t) dirs;
+	arr_t(install_t) install_files;
+	arr_t(install_t) install_dirs;
 
 	lt_xml_entity_t* cond_install_files;
 
-	lt_darr(flag_t) flags;
+	arr_t(flag_t) flags;
 
 	u8 step_order;
-	lt_darr(install_step_t) install_steps;
+	arr_t(install_step_t) install_steps;
 } fomod_t;
 
 extern b8 color;
@@ -254,7 +255,7 @@ b8 eval_flag_dep(fomod_t* fomod, lt_xml_entity_t* dep) {
 	lstr_t key = flag_attr->val;
 	lstr_t val = value_attr->val;
 
-	for (usz i = 0; i < lt_darr_count(fomod->flags); ++i)
+	for (usz i = 0; i < arr_count(fomod->flags); ++i)
 		if (lt_lseq_nocase(fomod->flags[i].key, key) && lt_lseq_nocase(fomod->flags[i].val, val))
 			return 1;
 	return 0;
@@ -335,7 +336,7 @@ i64 str_to_int(lstr_t str) {
 	return v;
 }
 
-int load_install(lt_darr(install_t)* arr, lt_xml_entity_t* xml) {
+int load_install(arr_t(install_t)* arr, lt_xml_entity_t* xml) {
 	lt_xml_attrib_t* src_attr = lt_xml_find_attrib(xml, CLSTR("source"));
 	lt_xml_attrib_t* dst_attr = lt_xml_find_attrib(xml, CLSTR("destination"));
 	lt_xml_attrib_t* always_attr = lt_xml_find_attrib(xml, CLSTR("alwaysInstall"));
@@ -352,17 +353,18 @@ int load_install(lt_darr(install_t)* arr, lt_xml_entity_t* xml) {
 	b8 ifusable = ifusable_attr ? str_to_bool(ifusable_attr->val) : 0;
 	usz priority = priority_attr ? str_to_int(priority_attr->val) : 0;
 
-	lt_darr_push(*arr, (install_t) {
-			.path = src_attr->val,
-			.install_path = dst,
-			.always = always,
-			.always_if_usable = ifusable,
-			.priority = priority });
+	LT_ASSERT(*arr = arr_push(*arr, (install_t) {
+		.path             = src_attr->val,
+		.install_path     = dst,
+		.always           = always,
+		.always_if_usable = ifusable,
+		.priority         = priority,
+	}));
 
 	return 0;
 }
 
-int load_file_list(lt_darr(install_t)* install_files, lt_darr(install_t)* install_dirs, lt_xml_entity_t* list) {
+int load_file_list(arr_t(install_t)* install_files, arr_t(install_t)* install_dirs, lt_xml_entity_t* list) {
 	usz child_count = lt_xml_child_count(list);
 	for (usz i = 0; i < child_count; ++i) {
 		lt_xml_entity_t* child = &list->elem.children[i];
@@ -380,7 +382,7 @@ int load_file_list(lt_darr(install_t)* install_files, lt_darr(install_t)* instal
 	return 0;
 }
 
-int load_flag_list(lt_darr(flag_t)* flags, lt_xml_entity_t* list) {
+int load_flag_list(arr_t(flag_t)* flags, lt_xml_entity_t* list) {
 	usz child_count = lt_xml_child_count(list);
 	for (usz i = 0; i < child_count; ++i) {
 		lt_xml_entity_t* child = &list->elem.children[i];
@@ -404,7 +406,10 @@ int load_flag_list(lt_darr(flag_t)* flags, lt_xml_entity_t* list) {
 			continue;
 		}
 
-		lt_darr_push(*flags, (flag_t) { .key = name_attrib->val, .val = lt_strdup(alloc, lt_lstrim(val)) });
+		LT_ASSERT(*flags = arr_push(*flags, (flag_t) {
+			.key = name_attrib->val,
+			.val = lt_strdup(alloc, lt_lstrim(val))
+		}));
 		lt_mfree(alloc, val.str);
 	}
 
@@ -446,35 +451,35 @@ lstr_t group_prompt(u8 type) {
 }
 
 static LT_INLINE
-b8 group_selection_validate(u8 group_type, lt_darr(u64) selection) {
+b8 group_selection_validate(u8 group_type, arr_t(u64) selection) {
 	switch (group_type) {
 	case GRP_ONEORMORE:
-		if (lt_darr_count(selection) <= 0) {
+		if (arr_count(selection) <= 0) {
 			lt_printf("you must select at least one option\n");
 			return 0;
 		}
 		return 1;
 
 	case GRP_ONEORZERO:
-		if (lt_darr_count(selection) > 1) {
+		if (arr_count(selection) > 1) {
 			lt_printf("cannot select more than one option\n");
 			return 0;
 		}
 		return 1;
 
 	case GRP_SELECTONE:
-		if (lt_darr_count(selection) <= 0) {
+		if (arr_count(selection) <= 0) {
 			lt_printf("you must select an option\n");
 			return 0;
 		}
-		if (lt_darr_count(selection) > 1) {
+		if (arr_count(selection) > 1) {
 			lt_printf("cannot select more than one option\n");
 			return 0;
 		}
 		return 1;
 
 	case GRP_SELECTALL:
-		if (lt_darr_count(selection) != 0) {
+		if (arr_count(selection) != 0) {
 			lt_printf("cannot select specific options when all options are required\n");
 			return 0;
 		}
@@ -530,7 +535,7 @@ u8 str_to_plugin_type(lt_xml_attrib_t* type_attrib) {
 	return PLG_OPTIONAL;
 }
 
-int load_dep_pattern_list(fomod_t* fomod, lt_darr(dep_plugin_type_t)* types, lt_xml_entity_t* type_list) {
+int load_dep_pattern_list(fomod_t* fomod, arr_t(dep_plugin_type_t)* types, lt_xml_entity_t* type_list) {
 	usz child_count = lt_xml_child_count(type_list);
 	for (usz i = 0; i < child_count; ++i) {
 		lt_xml_entity_t* child = &type_list->elem.children[i];
@@ -547,15 +552,16 @@ int load_dep_pattern_list(fomod_t* fomod, lt_darr(dep_plugin_type_t)* types, lt_
 		if (!find_elements(child, 2, names, required, children))
 			continue;
 
-		lt_darr_push(*types, (dep_plugin_type_t) {
-				.type = str_to_plugin_type(lt_xml_find_attrib(children[1], CLSTR("name"))),
-				.cond = children[0] });
+		LT_ASSERT(*types = arr_push(*types, (dep_plugin_type_t) {
+			.type = str_to_plugin_type(lt_xml_find_attrib(children[1], CLSTR("name"))),
+			.cond = children[0],
+		}));
 	}
 
 	return 0;
 }
 
-int load_plugin_list(fomod_t* fomod, lt_darr(plugin_t)* plugins, lt_xml_entity_t* plugin_list) {
+int load_plugin_list(fomod_t* fomod, arr_t(plugin_t)* plugins, lt_xml_entity_t* plugin_list) {
 	usz child_count = lt_xml_child_count(plugin_list);
 	for (usz i = 0; i < child_count; ++i) {
 		lt_xml_entity_t* child = &plugin_list->elem.children[i];
@@ -601,7 +607,7 @@ int load_plugin_list(fomod_t* fomod, lt_darr(plugin_t)* plugins, lt_xml_entity_t
 			continue;
 		}
 
-		lt_darr(dep_plugin_type_t) dep_types = lt_darr_create(dep_plugin_type_t, 4, alloc);
+		arr_t(dep_plugin_type_t) dep_types = arr_alloc(dep_plugin_type_t);
 
 		u8 default_type = PLG_OPTIONAL;
 
@@ -617,28 +623,29 @@ int load_plugin_list(fomod_t* fomod, lt_darr(plugin_t)* plugins, lt_xml_entity_t
 		else
 			default_type = str_to_plugin_type(lt_xml_find_attrib(plugin_type, CLSTR("name")));
 
-		lt_darr(install_t) files = lt_darr_create(install_t, 4, alloc);
-		lt_darr(install_t) dirs = lt_darr_create(install_t, 4, alloc);
-		lt_darr(flag_t) flags = lt_darr_create(flag_t, 4, alloc);
+		arr_t(install_t) files = arr_alloc(install_t);
+		arr_t(install_t) dirs  = arr_alloc(install_t);
+		arr_t(flag_t)    flags = arr_alloc(flag_t);
 
 		if (files_xm != NULL)
 			load_file_list(&files, &dirs, files_xm);
 		if (flags_xm != NULL)
 			load_flag_list(&flags, flags_xm);
 
-		lt_darr_push(*plugins, (plugin_t) {
-				.name = name_attrib->val,
-				.description = desc_str,
-				.default_type = default_type,
-				.dep_types = dep_types,
-				.files = files,
-				.dirs = dirs,
-				.flags = flags });
+		LT_ASSERT(*plugins = arr_push(*plugins, (plugin_t) {
+			.name = name_attrib->val,
+			.description = desc_str,
+			.default_type = default_type,
+			.dep_types = dep_types,
+			.files = files,
+			.dirs = dirs,
+			.flags = flags,
+		}));
 	}
 	return 0;
 }
 
-int load_group_list(fomod_t* fomod, lt_darr(group_t)* groups, lt_xml_entity_t* group_list) {
+int load_group_list(fomod_t* fomod, arr_t(group_t)* groups, lt_xml_entity_t* group_list) {
 	usz child_count = lt_xml_child_count(group_list);
 	for (usz i = 0; i < child_count; ++i) {
 		lt_xml_entity_t* child = &group_list->elem.children[i];
@@ -664,14 +671,15 @@ int load_group_list(fomod_t* fomod, lt_darr(group_t)* groups, lt_xml_entity_t* g
 
 		u8 plugin_order = str_to_order(lt_xml_find_attrib(plugin_list, CLSTR("order")));
 
-		lt_darr(plugin_t) plugins = lt_darr_create(plugin_t, 8, alloc);
+		arr_t(plugin_t) plugins = arr_alloc(plugin_t);
 		load_plugin_list(fomod, &plugins, plugin_list);
 
-		lt_darr_push(*groups, (group_t) {
-				.order = plugin_order,
-				.name = name_attrib->val,
-				.type = group_type,
-				.plugins = plugins });
+		LT_ASSERT(*groups = arr_push(*groups, (group_t) {
+			.order = plugin_order,
+			.name = name_attrib->val,
+			.type = group_type,
+			.plugins = plugins,
+		}));
 	}
 	return 0;
 }
@@ -703,14 +711,15 @@ int load_install_steps(fomod_t* fomod, lt_xml_entity_t* steps) {
 		lt_xml_attrib_t* order_attrib = lt_xml_find_attrib(children[1], CLSTR("order"));
 		u8 group_order = str_to_order(order_attrib);
 
-		lt_darr(group_t) groups = lt_darr_create(group_t, 16, alloc);
+		arr_t(group_t) groups = arr_alloc(group_t);
 		load_group_list(fomod, &groups, children[1]);
 
-		lt_darr_push(fomod->install_steps, (install_step_t) {
-				.order = group_order,
-				.visible_cond = children[0],
-				.name = name_attrib->val,
-				.groups = groups });
+		LT_ASSERT(fomod->install_steps = arr_push(fomod->install_steps, (install_step_t) {
+			.order = group_order,
+			.visible_cond = children[0],
+			.name = name_attrib->val,
+			.groups = groups,
+		}));
 	}
 	return 0;
 }
@@ -835,7 +844,7 @@ void print_texted(lt_texted_t* ed, char* sel_clr, char* normal_clr) {
 u8 find_plugin_type(fomod_t* fomod, plugin_t* plugin) {
 	u8 type = plugin->default_type;
 
-	for (usz i = 0; i < lt_darr_count(plugin->dep_types); ++i) {
+	for (usz i = 0; i < arr_count(plugin->dep_types); ++i) {
 		if (eval_deps(fomod, plugin->dep_types[i].cond)) {
 			type = plugin->dep_types[i].type;
 			break;
@@ -845,11 +854,11 @@ u8 find_plugin_type(fomod_t* fomod, plugin_t* plugin) {
 	return type;
 }
 
-lt_darr(u64) prompt_plugin_selection(group_t* group, lt_texted_t* ed, lt_strstream_t* clipboard) {
-	lt_darr(u64) selection = lt_darr_create(u64, 64, alloc);
+arr_t(u64) prompt_plugin_selection(group_t* group, lt_texted_t* ed, lt_strstream_t* clipboard) {
+	arr_t(u64) selection = arr_alloc(u64);
 
 input:
-	lt_darr_clear(selection);
+	arr_clear(selection);
 
 	lt_texted_clear(ed);
 	lstr_t prompt = CLSTR(": ");
@@ -874,7 +883,7 @@ input:
 		if (key == (LT_TERM_MOD_CTRL|'D')) {
 			lt_printf("\n");
 			lt_werrf("mod installation cancelled by user\n");
-			lt_darr_destroy(selection);
+			arr_free(selection);
 			return NULL;
 		}
 		lt_texted_input_term_key(ed, clipboard, key);
@@ -900,13 +909,13 @@ input:
 		}
 		u64 num = 0;
 		lt_err_t err = lt_lstou(numstr, &num);
-		if (err != LT_SUCCESS || num > lt_darr_count(group->plugins) || num == 0) {
+		if (err != LT_SUCCESS || num > arr_count(group->plugins) || num == 0) {
 			lt_printf("\ninvalid number '%S'\n", numstr);
 			goto input;
 		}
 		--num;
 
-		lt_darr_push(selection, num);
+		LT_ASSERT(selection = arr_push(selection, num));
 	}
 
 	lt_printf("\n");
@@ -915,7 +924,7 @@ input:
 		goto input;
 
 	if (group->type == GRP_SELECTALL) {
-		for (usz i = 0; i < lt_darr_count(group->plugins); ++i) {
+		for (usz i = 0; i < arr_count(group->plugins); ++i) {
 			group->plugins[i].selected = 1;
 		}
 	}
@@ -996,10 +1005,10 @@ int load_modconf(fomod_t* fomod, lstr_t path) {
 		}
 	}
 
-	fomod->files = lt_darr_create(install_t, 16, alloc);
-	fomod->dirs = lt_darr_create(install_t, 16, alloc);
+	fomod->files = arr_alloc(install_t);
+	fomod->dirs  = arr_alloc(install_t);
 
-	fomod->install_steps = lt_darr_create(install_step_t, 16, alloc);
+	fomod->install_steps = arr_alloc(install_step_t);
 
 	if (required_files != NULL)
 		load_file_list(&fomod->files, &fomod->dirs, required_files);
@@ -1014,10 +1023,10 @@ int load_modconf(fomod_t* fomod, lstr_t path) {
 	lt_strstream_t clipboard;
 	LT_ASSERT(lt_strstream_create(&clipboard, alloc) == LT_SUCCESS);
 
-	fomod->flags = lt_darr_create(flag_t, 64, alloc);
+	fomod->flags = arr_alloc(flag_t);
 
 	usz step_num = 1;
-	for (usz i = 0; i < lt_darr_count(fomod->install_steps); ++i) { // !! order is ignored
+	for (usz i = 0; i < arr_count(fomod->install_steps); ++i) { // !! order is ignored
 		install_step_t* step = &fomod->install_steps[i];
 		if (step->visible_cond && !eval_deps(fomod, step->visible_cond))
 			continue;
@@ -1027,7 +1036,7 @@ int load_modconf(fomod_t* fomod, lstr_t path) {
 		else
 			lt_printf("# Installation step %uz: %S\n", step_num++, step->name);
 
-		for (usz i = 0; i < lt_darr_count(step->groups); ++i) { // !! order is ignored
+		for (usz i = 0; i < arr_count(step->groups); ++i) { // !! order is ignored
 			group_t* group = &step->groups[i];
 
 			if (color)
@@ -1035,7 +1044,7 @@ int load_modconf(fomod_t* fomod, lstr_t path) {
 			else
 				lt_printf("## %S\n", group->name);
 
-			for (usz i = 0; i < lt_darr_count(group->plugins); ++i) {
+			for (usz i = 0; i < arr_count(group->plugins); ++i) {
 				plugin_t* plugin = &group->plugins[i];
 				plugin->eval_type = find_plugin_type(fomod, plugin);
 
@@ -1052,33 +1061,33 @@ int load_modconf(fomod_t* fomod, lstr_t path) {
 				draw_wrapped_text(lt_lstrim(plugin->description), lt_term_width - 1, CLSTR("     "));
 			}
 
-			lt_darr(u64) selection = prompt_plugin_selection(group, &ed, &clipboard);
+			arr_t(u64) selection = prompt_plugin_selection(group, &ed, &clipboard);
 			if (selection == NULL)
 				goto err3;
 			lt_printf("\n");
 
-			for (usz i = 0; i < lt_darr_count(selection); ++i)
+			for (usz i = 0; i < arr_count(selection); ++i)
 				group->plugins[selection[i]].selected = 1;
-			lt_darr_destroy(selection);
+			arr_free(selection);
 
-			for (usz i = 0; i < lt_darr_count(group->plugins); ++i) {
+			for (usz i = 0; i < arr_count(group->plugins); ++i) {
 				plugin_t* plugin = &group->plugins[i];
 
-				for (usz i = 0; i < lt_darr_count(plugin->files); ++i) {
+				for (usz i = 0; i < arr_count(plugin->files); ++i) {
 					install_t* file = &plugin->files[i];
 					if (plugin->selected || file->always || (file->always_if_usable && plugin->eval_type != PLG_NOTUSABLE))
-						lt_darr_push(fomod->files, *file);
+						LT_ASSERT(fomod->files = arr_push(fomod->files, *file));
 				}
 
-				for (usz i = 0; i < lt_darr_count(plugin->dirs); ++i) {
+				for (usz i = 0; i < arr_count(plugin->dirs); ++i) {
 					install_t* dir = &plugin->dirs[i];
 					if (plugin->selected || dir->always || (dir->always_if_usable && plugin->eval_type != PLG_NOTUSABLE))
-						lt_darr_push(fomod->dirs, *dir);
+						LT_ASSERT(fomod->dirs = arr_push(fomod->dirs, *dir));
 				}
 
 				if (plugin->selected) {
-					for (usz i = 0; i < lt_darr_count(plugin->flags); ++i)
-						lt_darr_push(fomod->flags, plugin->flags[i]);
+					for (usz i = 0; i < arr_count(plugin->flags); ++i)
+						LT_ASSERT(fomod->flags = arr_push(fomod->flags, plugin->flags[i]));
 				}
 			}
 		}
@@ -1089,21 +1098,21 @@ int load_modconf(fomod_t* fomod, lstr_t path) {
 	if (fomod->cond_install_files != NULL)
 		load_cond_file_installs(fomod, fomod->cond_install_files);
 
-	fomod->install_files = lt_darr_create(install_t, lt_darr_count(fomod->files), alloc);
-	fomod->install_dirs = lt_darr_create(install_t, lt_darr_count(fomod->dirs), alloc);
+	fomod->install_files = arr_alloc(install_t);
+	fomod->install_dirs  = arr_alloc(install_t);
 
-	for (usz i = 0; i < lt_darr_count(fomod->dirs); ++i) {
+	for (usz i = 0; i < arr_count(fomod->dirs); ++i) {
 		install_t* dir = &fomod->dirs[i];
 		dir->path = lt_strdup(alloc, dir->path);
 		dir->install_path = lt_strdup(alloc, dir->install_path);
-		lt_darr_push(fomod->install_dirs, *dir);
+		LT_ASSERT(fomod->install_dirs = arr_push(fomod->install_dirs, *dir));
 	}
 
-	for (usz i = 0; i < lt_darr_count(fomod->files); ++i) {
+	for (usz i = 0; i < arr_count(fomod->files); ++i) {
 		install_t* file = &fomod->files[i];
 		file->path = lt_strdup(alloc, file->path);
 		file->install_path = lt_strdup(alloc, file->install_path);
-		lt_darr_push(fomod->install_files, *file);
+		LT_ASSERT(fomod->install_files = arr_push(fomod->install_files, *file));
 	}
 
 	ret = 0;
@@ -1129,37 +1138,37 @@ void plugin_free(plugin_t* plugin) {
 	if (plugin->description.str)
 		lt_mfree(alloc, plugin->description.str);
 	if (plugin->files)
-		lt_darr_destroy(plugin->files);
+		arr_free(plugin->files);
 	if (plugin->dirs)
-		lt_darr_destroy(plugin->dirs);
+		arr_free(plugin->dirs);
 
 	if (plugin->dep_types)
-		lt_darr_destroy(plugin->dep_types);
+		arr_free(plugin->dep_types);
 
 	if (plugin->flags) {
-		for (usz i = 0; i < lt_darr_count(plugin->flags); ++i) {
+		for (usz i = 0; i < arr_count(plugin->flags); ++i) {
 			if (plugin->flags[i].val.str)
 				lt_mfree(alloc, plugin->flags[i].val.str);
 		}
-		lt_darr_destroy(plugin->flags);
+		arr_free(plugin->flags);
 	}
 }
 
 static
 void group_free(group_t* group) {
 	if (group->plugins) {
-		for (usz i = 0; i < lt_darr_count(group->plugins); ++i)
+		for (usz i = 0; i < arr_count(group->plugins); ++i)
 			plugin_free(&group->plugins[i]);
-		lt_darr_destroy(group->plugins);
+		arr_free(group->plugins);
 	}
 }
 
 static
 void install_step_free(install_step_t* step) {
 	if (step->groups) {
-		for (usz i = 0; i < lt_darr_count(step->groups); ++i)
+		for (usz i = 0; i < arr_count(step->groups); ++i)
 			group_free(&step->groups[i]);
-		lt_darr_destroy(step->groups);
+		arr_free(step->groups);
 	}
 }
 
@@ -1185,33 +1194,33 @@ void fomod_free(fomod_t* fomod) {
 		lt_mfree(alloc, fomod->module_name.str);
 
 	if (fomod->files)
-		lt_darr_destroy(fomod->files);
+		arr_free(fomod->files);
 	if (fomod->dirs)
-		lt_darr_destroy(fomod->dirs);
+		arr_free(fomod->dirs);
 
 	if (fomod->install_files) {
-		for (usz i = 0; i < lt_darr_count(fomod->install_files); ++i) {
+		for (usz i = 0; i < arr_count(fomod->install_files); ++i) {
 			lt_mfree(alloc, fomod->install_files[i].path.str);
 			lt_mfree(alloc, fomod->install_files[i].install_path.str);
 		}
-		lt_darr_destroy(fomod->install_files);
+		arr_free(fomod->install_files);
 	}
 	if (fomod->install_dirs) {
-		for (usz i = 0; i < lt_darr_count(fomod->install_dirs); ++i) {
+		for (usz i = 0; i < arr_count(fomod->install_dirs); ++i) {
 			lt_mfree(alloc, fomod->install_dirs[i].path.str);
 			lt_mfree(alloc, fomod->install_dirs[i].install_path.str);
 		}
-		lt_darr_destroy(fomod->install_dirs);
+		arr_free(fomod->install_dirs);
 	}
 
 	if (fomod->install_steps) {
-		for (usz i = 0; i < lt_darr_count(fomod->install_steps); ++i)
+		for (usz i = 0; i < arr_count(fomod->install_steps); ++i)
 			install_step_free(&fomod->install_steps[i]);
-		lt_darr_destroy(fomod->install_steps);
+		arr_free(fomod->install_steps);
 	}
 
 	if (fomod->flags)
-		lt_darr_destroy(fomod->flags);
+		arr_free(fomod->flags);
 }
 
 void path_dos2unix(lstr_t str) {
@@ -1255,7 +1264,7 @@ int fomod_install(char* in_path, char* out_path, char* root_data_path) {
 
 	void* copy_buf = lt_malloc(alloc, COPY_BUFSZ);
 
-	for (usz i = 0; i < lt_darr_count(fomod.install_files); ++i) {
+	for (usz i = 0; i < arr_count(fomod.install_files); ++i) {
 		install_t* file = &fomod.install_files[i];
 
 		path_dos2unix(file->path);
@@ -1283,7 +1292,7 @@ int fomod_install(char* in_path, char* out_path, char* root_data_path) {
 		lt_mfree(alloc, out_file_path.str);
 	}
 
-	for (usz i = 0; i < lt_darr_count(fomod.install_dirs); ++i) {
+	for (usz i = 0; i < arr_count(fomod.install_dirs); ++i) {
 		install_t* dir = &fomod.install_dirs[i];
 
 		path_dos2unix(dir->path);

@@ -4,6 +4,8 @@
 #include <lt/fwd.h>
 #include <lt/err.h>
 
+#include "darr.c"
+
 #define VI_REG	0
 #define VI_DIR	1
 #define VI_LNK	2
@@ -31,7 +33,7 @@ struct  vfs_inode {
 			u32 links;
 			u32 fds;
 			u32 lookups;
-			lt_darr(vfs_dirent_t) entries;
+			arr_t(vfs_dirent_t) entries;
 
 			mod_t* mod;
 			char* real_path;
@@ -60,7 +62,7 @@ usz inode_find_dirent(usz parent_id, lstr_t name);
 
 void vfs_thread_proc(void* mountpoint);
 
-void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) avail_mod_t, char* output_path);
+void vfs_mount(char* argv0_, char* mountpoint, arr_t(mod_t*) avail_mod_t, char* output_path);
 void vfs_unmount(void);
 
 

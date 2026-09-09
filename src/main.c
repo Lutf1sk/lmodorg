@@ -20,6 +20,7 @@
 
 #define alloc lt_libc_heap
 
+#include "darr.c"
 #include "ini.c"
 
 b8 verbose = 0;
@@ -28,8 +29,8 @@ b8 color = 0;
 ini_t config;
 char* profile_path;
 
-lt_darr(lstr_t) get_modlist() {
-	lt_darr(lstr_t) mods = lt_darr_create(lstr_t, 32, alloc);
+arr_t(lstr_t) get_modlist() {
+	arr_t(lstr_t) mods = arr_alloc(lstr_t);
 	LT_ASSERT(mods);
 
 	isz section_i = ini_find_section(&config, CLSTR("mods"));
@@ -39,7 +40,7 @@ lt_darr(lstr_t) get_modlist() {
 	ini_section_t* section = &config.sections[section_i];
 	for (ini_line_t* it = section->lines, *end = it + section->line_count; it < end; ++it) {
 		if (it->type == INI_LINE_VALUE && lt_lseq(ini_line_value(&config, it), CLSTR("1")))
-			lt_darr_push(mods, ini_line_key(&config, it));
+			LT_ASSERT(mods = arr_push(mods, ini_line_key(&config, it)));
 	}
 
 	return mods;
@@ -47,8 +48,8 @@ lt_darr(lstr_t) get_modlist() {
 
 #include <dirent.h>
 
-lt_darr(avail_mod_t) get_available_mods(char* path) {
-	lt_darr(avail_mod_t) mods = lt_darr_create(avail_mod_t, 32, alloc);
+arr_t(avail_mod_t) get_available_mods(char* path) {
+	arr_t(avail_mod_t) mods = arr_alloc(avail_mod_t);
 	LT_ASSERT(mods);
 
 	DIR* mods_dir = opendir(path);
@@ -64,20 +65,20 @@ lt_darr(avail_mod_t) get_available_mods(char* path) {
 		avail_mod_t mod = {
 				.name = lt_strdup(alloc, lt_lsfroms(ent->d_name)),
 				.root_path = lt_lsbuild(alloc, "%s/%s%c", path, ent->d_name, 0).str };
-		lt_darr_push(mods, mod);
+		LT_ASSERT(mods = arr_push(mods, mod));
 	}
 	closedir(mods_dir);
 
 	return mods;
 }
 
-lt_darr(mod_t*) get_mods(lt_darr(lstr_t) modlist, lt_darr(avail_mod_t) avail_mods) {
-	lt_darr(mod_t*) mods = lt_darr_create(mod_t*, 32, alloc);
+arr_t(mod_t*) get_mods(arr_t(lstr_t) modlist, arr_t(avail_mod_t) avail_mods) {
+	arr_t(mod_t*) mods = arr_alloc(mod_t*);
 	LT_ASSERT(mods);
 
-	for (usz i = 0; i < lt_darr_count(modlist); ++i) {
+	for (usz i = 0; i < arr_count(modlist); ++i) {
 		avail_mod_t* avail_mod = NULL;
-		for (usz j = 0; j < lt_darr_count(avail_mods); ++j) {
+		for (usz j = 0; j < arr_count(avail_mods); ++j) {
 			if (lt_lseq(modlist[i], avail_mods[j].name)) {
 				avail_mod = &avail_mods[j];
 				break;
@@ -102,21 +103,21 @@ lt_darr(mod_t*) get_mods(lt_darr(lstr_t) modlist, lt_darr(avail_mod_t) avail_mod
 				.rootfd = fd };
 		mod_register(mod);
 
-		lt_darr_push(mods, mod);
+		LT_ASSERT(mods = arr_push(mods, mod));
 	}
 
 	return mods;
 }
 
-b8 mod_exists(lt_darr(avail_mod_t) avail_mods, lstr_t name) {
-	for (usz i = 0; i < lt_darr_count(avail_mods); ++i)
+b8 mod_exists(arr_t(avail_mod_t) avail_mods, lstr_t name) {
+	for (usz i = 0; i < arr_count(avail_mods); ++i)
 		if (lt_lseq(avail_mods[i].name, name))
 			return 1;
 	return 0;
 }
 
-b8 mod_enabled(lt_darr(lstr_t) modlist, lstr_t name) {
-	for (usz i = 0; i < lt_darr_count(modlist); ++i)
+b8 mod_enabled(arr_t(lstr_t) modlist, lstr_t name) {
+	for (usz i = 0; i < arr_count(modlist); ++i)
 		if (lt_lseq(modlist[i], name))
 			return 1;
 	return 0;
@@ -265,7 +266,7 @@ lstr_t file_names[] = {
 	CLSTR("Plugins.txt"),
 };
 
-void build_list_file(lstr_t file_path, lt_darr(lstr_t) data_paths, u32 type) {
+void build_list_file(lstr_t file_path, arr_t(lstr_t) data_paths, u32 type) {
 	lstr_t* exts = list_extensions[type];
 	usz ext_count = list_extension_counts[type];
 
@@ -284,7 +285,7 @@ void build_list_file(lstr_t file_path, lt_darr(lstr_t) data_paths, u32 type) {
 		return;
 	}
 
-	for (usz i = 0; i < lt_darr_count(data_paths); ++i) {
+	for (usz i = 0; i < arr_count(data_paths); ++i) {
 		lstr_t data_path = data_paths[i];
 
 		lt_dir_t* dir = lt_dopenp(data_path, alloc);
@@ -315,7 +316,7 @@ void build_list_file(lstr_t file_path, lt_darr(lstr_t) data_paths, u32 type) {
 	lt_printf("generated '%S'\n", file_path);
 }
 
-void autocreate_list_files(lt_darr(lstr_t) data_dirs) {
+void autocreate_list_files(arr_t(lstr_t) data_dirs) {
 	lstr_t loadorder_path = ini_find_value(&config, CLSTR("generate"), CLSTR("loadorder.txt"));
 	lstr_t plugins_path   = ini_find_value(&config, CLSTR("generate"), CLSTR("plugins.txt"));
 	lstr_t archives_path  = ini_find_value(&config, CLSTR("generate"), CLSTR("archives.txt"));
@@ -477,7 +478,6 @@ u8 find_mod_dir(char* path, char** out_dir) {
 
 #include <sys/wait.h>
 
-
 int main(int argc, char** argv) {
 	LT_DEBUG_INIT();
 
@@ -488,7 +488,7 @@ int main(int argc, char** argv) {
 
 	profile_path = ".";
 
-	lt_darr(char*) args = lt_darr_create(char*, 32, alloc);
+	arr_t(char*) args = arr_alloc(char*);
 
 	lt_foreach_arg(arg, argc, argv) {
 		if (lt_arg_flag(arg, 'h', CLSTR("help"))) {
@@ -514,10 +514,10 @@ int main(int argc, char** argv) {
 			continue;
 		}
 
-		lt_darr_push(args, *arg->it);
+		arr_push(args, *arg->it);
 	}
 
-	if (lt_darr_count(args) == 0 || help) {
+	if (arr_count(args) == 0 || help) {
 		lt_printf(
 			"usage: lmodorg [OPTIONS] COMMAND\n"
 			"options:\n"
@@ -537,7 +537,7 @@ int main(int argc, char** argv) {
 			"  lmodorg active             List active mods.\n"
 			"  lmodorg generate           Generate loadorder files without mounting a VFS.\n"
 		);
-		lt_darr_destroy(args);
+		arr_free(args);
 		return 0;
 	}
 
@@ -561,17 +561,17 @@ int main(int argc, char** argv) {
 
 	mods_init();
 
-	lt_darr(lstr_t) modlist = get_modlist();
-	lt_darr(avail_mod_t) avail_mods = get_available_mods(mods_path);
-	lt_darr(mod_t*) mods = get_mods(modlist, avail_mods);
+	arr_t(lstr_t) modlist = get_modlist();
+	arr_t(avail_mod_t) avail_mods = get_available_mods(mods_path);
+	arr_t(mod_t*) mods = get_mods(modlist, avail_mods);
 
-	lt_darr(lstr_t) data_dirs = lt_darr_create(lstr_t, 128, alloc);
-	lt_darr_push(data_dirs, lt_lsbuild(alloc, "%s/data", root_path));
-	lt_darr_push(data_dirs, lt_lsbuild(alloc, "%s/data", output_path));
-	for (usz i = 0; i < lt_darr_count(mods); ++i) {
-		lt_darr_push(data_dirs, lt_lsbuild(alloc, "%s/mods/%S/data", profile_path, mods[i]->name));
+	arr_t(lstr_t) data_dirs = arr_alloc(lstr_t);
+	LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/data", root_path)));
+	LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/data", output_path)));
+	for (usz i = 0; i < arr_count(mods); ++i) {
+		LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/mods/%S/data", profile_path, mods[i]->name)));
 	}
-	for (usz i = 0; i < lt_darr_count(data_dirs); ++i) {
+	for (usz i = 0; i < arr_count(data_dirs); ++i) {
 		case_adjust_data_path(data_dirs[i]);
 	}
 
@@ -601,11 +601,11 @@ int main(int argc, char** argv) {
 			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
 		}
 
-		if (lt_darr_count(args) < 2) {
+		if (arr_count(args) < 2) {
 			lt_ferrf("expected a name after 'new'\n");
 		}
 
-		for (usz i = 1; i < lt_darr_count(args); ++i) {
+		for (usz i = 1; i < arr_count(args); ++i) {
 			lstr_t arg = lt_lsfroms(args[i]);
 
 			if (mod_exists(avail_mods, arg)) {
@@ -640,11 +640,11 @@ int main(int argc, char** argv) {
 			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
 		}
 
-		if (lt_darr_count(args) < 2) {
+		if (arr_count(args) < 2) {
 			lt_ferrf("expected a name after 'remove'\n");
 		}
 
-		for (usz i = 1; i < lt_darr_count(args); ++i) {
+		for (usz i = 1; i < arr_count(args); ++i) {
 			lstr_t path = lt_lsbuild(alloc, "%s/%s", mods_path, args[i]);
 
 			if ((err = lt_dremovep(path, alloc))) {
@@ -663,11 +663,11 @@ int main(int argc, char** argv) {
 			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
 		}
 
-		if (lt_darr_count(args) < 2) {
+		if (arr_count(args) < 2) {
 			lt_ferrf("expected a name after 'enable'\n");
 		}
 
-		for (usz i = 1; i < lt_darr_count(args); ++i) {
+		for (usz i = 1; i < arr_count(args); ++i) {
 			lstr_t arg = lt_lsfroms(args[i]);
 
 			if (!mod_exists(avail_mods, arg)) {
@@ -691,22 +691,22 @@ int main(int argc, char** argv) {
 			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
 		}
 
-		if (lt_darr_count(args) < 2) {
+		if (arr_count(args) < 2) {
 			lt_ferrf("expected a name after 'disable'\n");
 		}
 
-		for (usz i = 1; i < lt_darr_count(args); ++i)
+		for (usz i = 1; i < arr_count(args); ++i)
 			ini_set_value(&config, mods_section_i, lt_lsfroms(args[i]), CLSTR("0"));
 
 		update_config(conf_path);
 	}
 
 	else if (strcmp(args[0], "mods") == 0) {
-		if (lt_darr_count(args) != 1) {
+		if (arr_count(args) != 1) {
 			lt_ferrf("command 'mods' takes no arguments\n");
 		}
 
-		for (usz i = 0; i < lt_darr_count(avail_mods); ++i) {
+		for (usz i = 0; i < arr_count(avail_mods); ++i) {
 			lstr_t name = avail_mods[i].name;
 
 			b8 is_enabled = mod_enabled(modlist, name);
@@ -730,11 +730,11 @@ int main(int argc, char** argv) {
 	}
 
 	else if (strcmp(args[0], "active") == 0) {
-		if (lt_darr_count(args) != 1) {
+		if (arr_count(args) != 1) {
 			lt_ferrf("command 'active' takes no arguments\n");
 		}
 
-		for (usz i = 0; i < lt_darr_count(modlist); ++i) {
+		for (usz i = 0; i < arr_count(modlist); ++i) {
 			char* name_clr = "";
 			char* reset = "";
 			if (color) {
@@ -750,7 +750,7 @@ int main(int argc, char** argv) {
 		if (dir_mounted(root_path) && !force) {
 			lt_ferrf("profiles should not be edited while mounted, rerun with '--force' to try anyway\n");
 		}
-		if (lt_darr_count(args) < 3) {
+		if (arr_count(args) < 3) {
 			lt_ferrf("expected two arguments after 'install'\n");
 		}
 
@@ -861,7 +861,7 @@ int main(int argc, char** argv) {
 	}
 
 	else if (strcmp(args[0], "generate") == 0) {
-		if (lt_darr_count(args) != 1) {
+		if (arr_count(args) != 1) {
 			lt_ferrf("command 'generate' takes no arguments\n");
 		}
 
@@ -874,18 +874,18 @@ int main(int argc, char** argv) {
 
 	mods_terminate();
 
-	for (usz i = 0; i < lt_darr_count(data_dirs); ++i) {
+	for (usz i = 0; i < arr_count(data_dirs); ++i) {
 		lt_mfree(alloc, data_dirs[i].str);
 	}
-	lt_darr_destroy(data_dirs);
+	arr_free(data_dirs);
 
-	lt_darr_destroy(modlist);
-	for (usz i = 0; i < lt_darr_count(avail_mods); ++i) {
+	arr_free(modlist);
+	for (usz i = 0; i < arr_count(avail_mods); ++i) {
 		lt_mfree(alloc, avail_mods[i].root_path);
 		lt_mfree(alloc, avail_mods[i].name.str);
 	}
-	lt_darr_destroy(avail_mods);
-	lt_darr_destroy(mods);
+	arr_free(avail_mods);
+	arr_free(mods);
 
 	lt_mfree(alloc, output_path);
 	lt_mfree(alloc, mods_path);
@@ -894,6 +894,6 @@ int main(int argc, char** argv) {
 	lt_mfree(alloc, conf_data.str);
 	lt_mfree(alloc, conf_path.str);
 
-	lt_darr_destroy(args);
+	arr_free(args);
 	return 0;
 }

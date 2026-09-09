@@ -40,7 +40,7 @@ static char* argv0;
 #define ID_INVAL 0
 #define ID_ROOT 1
 
-static lt_darr(vfs_inode_t) ino_tab = NULL;
+static arr_t(vfs_inode_t) ino_tab = NULL;
 static usz inode_id_free = ID_INVAL;
 
 extern b8 verbose;
@@ -62,7 +62,7 @@ lt_err_t inode_insert_dirent(usz parent_id, lstr_t name, usz child_id) {
 	--dupname.len;
 
 	vfs_dirent_t ent = { .present = 1, .name = dupname, .cname = dupname.str, .id = child_id };
-	lt_darr_push(parent->entries, ent);
+	LT_ASSERT(parent->entries = arr_push(parent->entries, ent));
 	inode_link(child_id);
 	return LT_SUCCESS;
 }
@@ -77,12 +77,14 @@ void inode_erase_dirent(usz parent_id, usz ent_idx) {
 		ent->present = 0;
 	else {
 		lt_mfree(alloc, ino_tab[parent_id].entries[ent_idx].cname);
-		lt_darr_erase(ino_tab[parent_id].entries, ent_idx, 1);
+		arr_erase(ino_tab[parent_id].entries, ent_idx);
 	}
 }
 
 void inode_register_at(usz id, u8 type, mod_t* mod, char* path) {
 	LT_ASSERT(!ino_tab[id].allocated);
+
+	// !! this should walk the free list and remove any occurences of the registered id
 
 	ino_tab[id] = (vfs_inode_t) {
 			.allocated = 1,
@@ -91,7 +93,7 @@ void inode_register_at(usz id, u8 type, mod_t* mod, char* path) {
 			.real_path = path };
 
 	if (type == VI_DIR)
-		ino_tab[id].entries = lt_darr_create(vfs_dirent_t, 8, alloc);
+		ino_tab[id].entries = arr_alloc(vfs_dirent_t);
 }
 
 usz inode_register(u8 type, mod_t* mod, char* path) {
@@ -115,13 +117,13 @@ void inode_free(usz id) {
 	if (ino_tab[id].type == VI_DIR) {
 		lt_mfree(alloc, ino_tab[id].entries[0].cname);
 		lt_mfree(alloc, ino_tab[id].entries[1].cname);
-		for (usz i = 2; i < lt_darr_count(ino_tab[id].entries); ++i) {
+		for (usz i = 2; i < arr_count(ino_tab[id].entries); ++i) {
 			vfs_dirent_t ent = ino_tab[id].entries[i];
 			if (ent.present)
 				inode_unlink(ent.id, 1);
 			lt_mfree(alloc, ent.cname);
 		}
-		lt_darr_destroy(ino_tab[id].entries);
+		arr_free(ino_tab[id].entries);
 		ino_tab[id].entries = NULL;
 	}
 
@@ -138,13 +140,13 @@ void inode_force_free(usz id) {
 	if (ino_tab[id].type == VI_DIR) {
 		lt_mfree(alloc, ino_tab[id].entries[0].cname);
 		lt_mfree(alloc, ino_tab[id].entries[1].cname);
-		for (usz i = 2; i < lt_darr_count(ino_tab[id].entries); ++i) {
+		for (usz i = 2; i < arr_count(ino_tab[id].entries); ++i) {
 			vfs_dirent_t ent = ino_tab[id].entries[i];
 			if (ent.present)
 				inode_force_free(ent.id);
 			lt_mfree(alloc, ent.cname);
 		}
-		lt_darr_destroy(ino_tab[id].entries);
+		arr_free(ino_tab[id].entries);
 	}
 
 	lt_mfree(alloc, ino_tab[id].real_path);
@@ -189,11 +191,11 @@ void inode_close(usz id, usz n) {
 	LT_ASSERT(ino_tab[id].fds >= n);
 	ino_tab[id].fds -= n;
 	if (ino_tab[id].fds == 0 && ino_tab[id].type == VI_DIR && ino_tab[id].entries != NULL) {
-		for (usz i = 0; i < lt_darr_count(ino_tab[id].entries); ++i) {
+		for (usz i = 0; i < arr_count(ino_tab[id].entries); ++i) {
 			vfs_dirent_t ent = ino_tab[id].entries[i];
 			if (!ent.present) {
 				lt_mfree(alloc, ent.cname);
-				lt_darr_erase(ino_tab[id].entries, i--, 1);
+				arr_erase(ino_tab[id].entries, i--);
 			}
 		}
 	}
@@ -206,8 +208,8 @@ void inode_open(usz id) {
 }
 
 isz inode_find_dirent_index(usz parent_id, lstr_t name) {
-	lt_darr(vfs_dirent_t) ents = ino_tab[parent_id].entries;
-	for (usz i = 0; i < lt_darr_count(ents); ++i)
+	arr_t(vfs_dirent_t) ents = ino_tab[parent_id].entries;
+	for (usz i = 0; i < arr_count(ents); ++i)
 		if (ents[i].present && lt_lseq_nocase(ents[i].name, name))
 			return i;
 
@@ -513,8 +515,8 @@ void vfs_readdir(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, struct 
 
 	usz bufoff = 0;
 
-	lt_darr(vfs_dirent_t) ents = ino_tab[ino].entries;
-	usz entcount = lt_darr_count(ents);
+	arr_t(vfs_dirent_t) ents = ino_tab[ino].entries;
+	usz entcount = arr_count(ents);
 
 	char* buf = lt_malloc(alloc, size);
 	for (usz i = off; i < entcount; ++i) {
@@ -543,8 +545,8 @@ void vfs_readdirplus(fuse_req_t req, fuse_ino_t ino, size_t size, off_t off, str
 
 	usz bufoff = 0;
 
-	lt_darr(vfs_dirent_t) ents = ino_tab[ino].entries;
-	usz entcount = lt_darr_count(ents);
+	arr_t(vfs_dirent_t) ents = ino_tab[ino].entries;
+	usz entcount = arr_count(ents);
 
 	char* buf = lt_malloc(alloc, size);
 	for (usz i = off; i < entcount; ++i) {
@@ -1151,21 +1153,21 @@ void print_debug_ls(usz id) {
 		return;
 	}
 
-	for (usz i = 0; i < lt_darr_count(inode->entries); ++i) {
+	for (usz i = 0; i < arr_count(inode->entries); ++i) {
 		usz entid = inode->entries[i].id;
 		vfs_inode_t* ent = &ino_tab[entid];
 		lt_printf("\t%_6uz %_14S %S\n", entid, ent->mod->name, inode->entries[i].name);
 	}
 }
 
-void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* output_path) {
+void vfs_mount(char* argv0_, char* mountpoint, arr_t(mod_t*) mods, char* output_path) {
 	argv0 = argv0_;
 
 #define INO_TABSZ 65535 * 4
 
 	// initialize inode table
-	ino_tab = lt_darr_create(vfs_inode_t, INO_TABSZ, alloc);
-	ino_tab = lt_darr_make_space(ino_tab, INO_TABSZ);
+	LT_ASSERT(ino_tab = arr_alloc(vfs_inode_t));
+	LT_ASSERT(ino_tab = arr_push_zeroed(ino_tab, INO_TABSZ));
 	memset(ino_tab, 0, sizeof(vfs_inode_t) * INO_TABSZ);
 	inode_id_free = ID_INVAL;
 
@@ -1182,7 +1184,7 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 	mod_register(loopback_mod);
 
 	ino_tab[ID_ROOT + 1].next_id = ID_INVAL;
-	for (usz i = ID_ROOT + 2; i < lt_darr_count(ino_tab); ++i)
+	for (usz i = ID_ROOT + 2; i < arr_count(ino_tab); ++i)
 		ino_tab[i].next_id = i - 1;
 	inode_id_free = INO_TABSZ - 1;
 
@@ -1193,7 +1195,7 @@ void vfs_mount(char* argv0_, char* mountpoint, lt_darr(mod_t*) mods, char* outpu
 
 	// register mods
 
-	for (usz i = 0; i < lt_darr_count(mods); ++i) {
+	for (usz i = 0; i < arr_count(mods); ++i) {
 		int fd = mods[i]->rootfd;
 		LT_ASSERT(fd >= 0);
 
@@ -1256,5 +1258,5 @@ void vfs_unmount(void) {
 		lt_ierrf("freeing file tree\n");
 	inode_force_free(ID_ROOT);
 
-	lt_darr_destroy(ino_tab);
+	arr_free(ino_tab);
 }
