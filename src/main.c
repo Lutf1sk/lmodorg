@@ -157,6 +157,16 @@ lstr_t expand_path(lstr_t path) {
 			it += 4;
 		}
 
+		else if (end - it >= 4 && memcmp(it, "GAME", 4) == 0) {
+			lstr_t replacement = ini_find_value(&config, CLSTR("paths"), CLSTR("game"));
+			if (!replacement.len) {
+				lt_werrf("path '%S' cannot be expanded, because [paths].game has not been set\n", path);
+				return NLSTR(); // !! leaks
+			}
+			lt_strstream_writels(&ss, replacement);
+			it += 4;
+		}
+
 		else if (end - it >= 7 && memcmp(it, "PROFILE", 7) == 0) {
 			lt_strstream_writels(&ss, lt_lsfroms(profile_path));
 			it += 7;
@@ -550,6 +560,10 @@ int main(int argc, char** argv) {
 	config = ini_parse(conf_data);
 	if (config.error)
 		lt_ferrf("failed to parse config file '%S'\n", conf_path);
+
+	lstr_t cf_color = ini_find_value(&config, CLSTR("lmodorg"), CLSTR("color"));
+	if (!color && lt_lseq(lt_lstrim(cf_color), CLSTR("1")))
+		color = 1;
 
 	isz mods_section_i = ini_find_section(&config, CLSTR("mods"));
 	if (mods_section_i < 0)
