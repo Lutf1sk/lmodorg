@@ -97,9 +97,16 @@ void inode_register_at(usz id, u8 type, mod_t* mod, char* path) {
 }
 
 usz inode_register(u8 type, mod_t* mod, char* path) {
-	LT_ASSERT(inode_id_free != ID_INVAL);
-	usz id = inode_id_free;
-	inode_id_free = ino_tab[id].next_id;
+	usz id;
+	if (inode_id_free == ID_INVAL) {
+		LT_ASSERT(ino_tab = arr_push_zeroed(ino_tab, 1));
+		id = arr_count(ino_tab) - 1;
+		inode_id_free = ID_INVAL;
+	}
+	else {
+		id = inode_id_free;
+		inode_id_free = ino_tab[id].next_id;
+	}
 
 	inode_register_at(id, type, mod, path);
 	return id;
@@ -1163,7 +1170,7 @@ void print_debug_ls(usz id) {
 void vfs_mount(char* argv0_, char* mountpoint, arr_t(mod_t*) mods, char* output_path) {
 	argv0 = argv0_;
 
-#define INO_TABSZ 65535 * 4
+#define INO_TABSZ 16
 
 	// initialize inode table
 	LT_ASSERT(ino_tab = arr_alloc(vfs_inode_t));
