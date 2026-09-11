@@ -426,7 +426,8 @@ u8 find_mod_dir(char* path, char** out_dir) {
 
 		if (lt_lseq_nocase(name, CLSTR("fomod"))) {
 			has_fomod_dir = 1;
-			is_valid_fomod = fstatat_nocase(dirfd(dir), "fomod/ModuleConfig.xml", NULL, 0) >= 0;
+			struct stat st;
+			is_valid_fomod = fstatat_nocase(dirfd(dir), "fomod/ModuleConfig.xml", &st, 0) >= 0;
 		}
 		else if (lt_lseq_nocase(name, CLSTR("Meshes")) ||
 			lt_lseq_nocase(name, CLSTR("Scripts")) ||
@@ -453,6 +454,9 @@ u8 find_mod_dir(char* path, char** out_dir) {
 		}
 	}
 	closedir(dir);
+
+	if (has_fomod_dir && !is_valid_fomod)
+		lt_printf("extracted tree contains fomod directory, but no valid 'ModuleConfig.xml' file");
 
 	if (has_fomod_dir && is_valid_fomod) {
 		*out_dir = strdup(path);
