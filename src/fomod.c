@@ -1270,9 +1270,13 @@ int fomod_install(char* in_path, char* out_path, char* root_data_path) {
 		path_dos2unix(file->path);
 		path_dos2unix(file->install_path);
 
-		lt_printf("installing file '%S' to '%S'\n", file->path, file->install_path);
+		lt_printf("installing file '%S'\n", file->path);
 
-		lstr_t out_file_path = lt_lsbuild(alloc, "%s/%S", out_path, file->install_path);
+		lstr_t install_path = file->install_path;
+		if (!install_path.len)
+			install_path = lt_lsbasename(file->path);
+
+		lstr_t out_file_path = lt_lsbuild(alloc, "%s/%S", out_path, install_path);
 		ls_rebuild_path_case(out_file_path);
 
 		lt_err_t err = lt_mkpath(lt_lsdirname(out_file_path));
@@ -1286,7 +1290,7 @@ int fomod_install(char* in_path, char* out_path, char* root_data_path) {
 		ls_rebuild_path_case(in_file_path);
 
 		if ((err = lt_fcopyp(in_file_path, out_file_path, copy_buf, COPY_BUFSZ, alloc)))
-			lt_werrf("failed to copy '%s': %S\n", in_path, lt_err_str(err));
+			lt_werrf("failed to copy '%S' to '%S': %S\n", in_file_path, out_file_path, lt_err_str(err));
 
 		lt_mfree(alloc, in_file_path.str);
 		lt_mfree(alloc, out_file_path.str);
@@ -1298,7 +1302,7 @@ int fomod_install(char* in_path, char* out_path, char* root_data_path) {
 		path_dos2unix(dir->path);
 		path_dos2unix(dir->install_path);
 
-		lt_printf("installing directory '%S' to '%S'\n", dir->path, dir->install_path);
+		lt_printf("installing directory '%S'\n", dir->path);
 
 		lstr_t out_dir_path = lt_lsbuild(alloc, "%s/%S", out_path, dir->install_path);
 		ls_rebuild_path_case(out_dir_path);
