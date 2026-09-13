@@ -836,6 +836,7 @@ int main(int argc, char** argv) {
 		char* mod_path = NULL;
 		u8 mod_type = find_mod_dir(src_path, &mod_path);
 		if (mod_type == DIR_UNKN) {
+			lt_dremovep(lt_lsfroms(out_path), alloc);
 			lt_ferrf("failed to identify mod type; manual installation required\n");
 		}
 
