@@ -499,6 +499,7 @@ int main(int argc, char** argv) {
 
 	b8 help = 0;
 	b8 force = 0;
+	b8 auto_enable = 0;
 
 	profile_path = ".";
 
@@ -528,6 +529,11 @@ int main(int argc, char** argv) {
 			continue;
 		}
 
+		if (lt_arg_flag(arg, 'e', CLSTR("enable"))) {
+			auto_enable = 1;
+			continue;
+		}
+
 		arr_push(args, *arg->it);
 	}
 
@@ -539,6 +545,8 @@ int main(int argc, char** argv) {
 			"  -v, --verbose         Print debugging information to stderr.\n"
 			"  -c, --color           Display output in multiple colors.\n"
 			"  -C, --profile=PATH    Use profile at PATH.\n"
+			"  -e, --enable          Enable created mods.\n"
+			"      --force           Allow modifications while VFS is mounted.\n"
 			"commands:\n"
 			"  lmodorg mount [OUTPUT]     Mount VFS with output directory OUTPUT, if no\n"
 			"                             OUTPUT is provided, OUTPUT is PROFILE/output.\n"
@@ -647,10 +655,12 @@ int main(int argc, char** argv) {
 				continue;
 			}
 
-			ini_add_value(&config, mods_section_i, arg, CLSTR("1"));
+			if (auto_enable)
+				ini_add_value(&config, mods_section_i, arg, CLSTR("1"));
 		}
 
-		update_config(conf_path);
+		if (auto_enable)
+			update_config(conf_path);
 	}
 
 	else if (strcmp(args[0], "remove") == 0) {
@@ -776,14 +786,16 @@ int main(int argc, char** argv) {
 			lt_ferrf("mod '%s' already exists\n", args[1]);
 		}
 
+		char* mod_name = args[1];
 		char* src_path = args[2];
+
 		lt_stat_t st;
 		if ((err = lt_statp(lt_lsfroms(src_path), &st))) {
 			lt_ferrf("failed to stat '%S': %S\n", src_path, lt_err_str(err));
 		}
 
 		if (st.type == LT_DIRENT_FILE) {
-			char* tmp_src_path = lt_lsbuild(alloc, "%s/tmp/%s%c", profile_path, args[1], 0).str; // !! leaked
+			char* tmp_src_path = lt_lsbuild(alloc, "%s/tmp/%s%c", profile_path, mod_name, 0).str; // !! leaked
 
 			lt_mkpath(lt_lsdirname(lt_lsfroms(tmp_src_path)));
 
@@ -815,7 +827,7 @@ int main(int argc, char** argv) {
 			src_path = tmp_src_path;
 		}
 
-		char* out_path = lt_lsbuild(alloc, "%s/%s%c", mods_path, args[1], 0).str;
+		char* out_path = lt_lsbuild(alloc, "%s/%s%c", mods_path, mod_name, 0).str;
 
 		if ((err = lt_mkdir(lt_lsfroms(out_path)))) {
 			lt_ferrf("failed to create mod directory '%s': %S\n", out_path, lt_err_str(err));
@@ -876,6 +888,11 @@ int main(int argc, char** argv) {
 
 		lt_mfree(alloc, out_path);
 		lt_mfree(alloc, mod_path);
+
+		if (auto_enable) {
+			ini_add_value(&config, mods_section_i, lt_lsfroms(mod_name), CLSTR("1"));
+			update_config(conf_path);
+		}
 	}
 
 	else if (strcmp(args[0], "generate") == 0) {
