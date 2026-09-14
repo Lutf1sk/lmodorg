@@ -28,6 +28,9 @@ b8 color = 0;
 
 ini_t config;
 char* profile_path;
+char* root_path;
+char* mods_path;
+char* output_path;
 
 arr_t(lstr_t) get_modlist() {
 	arr_t(lstr_t) mods = arr_alloc(lstr_t);
@@ -253,32 +256,72 @@ void case_adjust_data_path(lstr_t data_path) {
 #define LIST_PLUGINS 2
 
 static
-lstr_t list_extensions[][4] = {
-	{ CLSTR(".esm"), CLSTR(".esp"), CLSTR(".esl") },
-	{ CLSTR(".bsa") },
-	{ CLSTR(".esp") },
-};
-
-static
-usz list_extension_counts[] = { 3, 1, 1 };
-
-static
-lstr_t default_paths[] = {
-	CLSTR("$APPDATA/LoadOrder.txt"),
-	CLSTR("$APPDATA/Archives.txt"),
-	CLSTR("$APPDATA/Plugins.txt"),
-};
-
-static
 lstr_t file_names[] = {
 	CLSTR("LoadOrder.txt"),
 	CLSTR("Archives.txt"),
 	CLSTR("Plugins.txt"),
 };
 
+// particularly dumb implementation, this one.
+// luckily, all the inputs are very small.
+arr_t(lstr_t) add_unique_str(arr_t(lstr_t) arr, lstr_t str) {
+	for (usz i = 0; i < arr_count(arr); ++i) {
+		if (lt_lseq(arr[i], str))
+			return arr;
+	}
+	return arr_push(arr, str);
+}
+
+void write_plugins(lt_file_t* file, arr_t(lstr_t) data_paths, b8 mark_enabled) {
+	arr_t(lstr_t) files = arr_alloc(lstr_t);
+
+	for (usz i = 0; i < arr_count(data_paths); ++i) {
+		lt_dir_t* dir = lt_dopenp(data_paths[i], alloc);
+		if (!dir)
+			continue;
+
+		lt_foreach_dirent(ent, dir) {
+			if (ent->type != LT_DIRENT_FILE)
+				continue;
+			if (lt_lssuffix(ent->name, CLSTR(".esp")) || lt_lssuffix(ent->name, CLSTR(".esm")) || lt_lssuffix(ent->name, CLSTR(".esl")))
+				LT_ASSERT(files = add_unique_str(files, lt_strdup(alloc, ent->name)));
+		}
+
+		lt_dclose(dir, alloc);
+	}
+
+	char* prefix = mark_enabled ? "*" : "";
+	for (usz i = 0; i < arr_count(files); ++i)
+		lt_fprintf(file, "%s%S\r\n", prefix, files[i]);
+}
+
+void write_file_list(lt_file_t* file, arr_t(lstr_t) data_paths, lstr_t suffix) {
+	arr_t(lstr_t) files = arr_alloc(lstr_t);
+
+	for (usz i = 0; i < arr_count(data_paths); ++i) {
+		lt_dir_t* dir = lt_dopenp(data_paths[i], alloc);
+		if (!dir)
+			continue;
+
+		lt_foreach_dirent(ent, dir) {
+			if (ent->type != LT_DIRENT_FILE)
+				continue;
+			if (lt_lssuffix(ent->name, suffix))
+				LT_ASSERT(files = add_unique_str(files, lt_strdup(alloc, ent->name)));
+		}
+		lt_dclose(dir, alloc);
+	}
+
+	for (usz i = 0; i < arr_count(files); ++i)
+		lt_fprintf(file, "%S\r\n", files[i]);
+}
+
 void build_list_file(lstr_t file_path, arr_t(lstr_t) data_paths, u32 type) {
-	lstr_t* exts = list_extensions[type];
-	usz ext_count = list_extension_counts[type];
+	static lstr_t default_paths[] = {
+		CLSTR("$APPDATA/LoadOrder.txt"),
+		CLSTR("$APPDATA/Archives.txt"),
+		CLSTR("$APPDATA/Plugins.txt"),
+	};
 
 	if (lt_lseq(file_path, CLSTR("default")))
 		file_path = default_paths[type];
@@ -295,30 +338,10 @@ void build_list_file(lstr_t file_path, arr_t(lstr_t) data_paths, u32 type) {
 		return;
 	}
 
-	for (usz i = 0; i < arr_count(data_paths); ++i) {
-		lstr_t data_path = data_paths[i];
-
-		lt_dir_t* dir = lt_dopenp(data_path, alloc);
-		if (!dir)
-			continue;
-
-		char* prefix = "";
-		if (type == LIST_PLUGINS)
-			prefix = "*";
-
-		lt_foreach_dirent(ent, dir) {
-			if (ent->type != LT_DIRENT_FILE)
-				continue;
-
-			for (usz i = 0; i < ext_count; ++i) {
-				if (lt_lssuffix(ent->name, exts[i])) {
-					lt_fprintf(file, "%s%S\n", prefix, ent->name);
-					break;
-				}
-			}
-		}
-
-		lt_dclose(dir, alloc);
+	switch (type) {
+		case LIST_PLUGINS:   write_plugins(file, data_paths, 1); break;
+		case LIST_ARCHIVES:  write_file_list(file, data_paths, CLSTR(".bsa")); break;
+		case LIST_LOADORDER: write_plugins(file, data_paths, 0); break;
 	}
 
 	lt_fclose(file, alloc);
@@ -326,17 +349,33 @@ void build_list_file(lstr_t file_path, arr_t(lstr_t) data_paths, u32 type) {
 	lt_printf("generated '%S'\n", file_path);
 }
 
-void autocreate_list_files(arr_t(lstr_t) data_dirs) {
+void autocreate_list_files(arr_t(mod_t*) mods) {
 	lstr_t loadorder_path = ini_find_value(&config, CLSTR("generate"), CLSTR("loadorder.txt"));
 	lstr_t plugins_path   = ini_find_value(&config, CLSTR("generate"), CLSTR("plugins.txt"));
 	lstr_t archives_path  = ini_find_value(&config, CLSTR("generate"), CLSTR("archives.txt"));
 
-	if (loadorder_path.len)
-		build_list_file(loadorder_path, data_dirs, LIST_LOADORDER);
+	arr_t(lstr_t) data_dirs = arr_alloc(lstr_t);
+	for (usz i = 0; i < arr_count(mods); ++i)
+		LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/mods/%S/data", profile_path, mods[i]->name)));
+	for (usz i = 0; i < arr_count(data_dirs); ++i)
+		case_adjust_data_path(data_dirs[i]);
+
+	// this lets generated ESPs like FNIS.esp get loaded properly, but has the side effect of
+	// adding creation club content, since it doesn't check 'Skyrim.ccc'.
+	// should be improved.
+	LT_ASSERT(data_dirs = arr_insert(data_dirs, 0, lt_lsbuild(alloc, "%s/data", output_path)));
+	case_adjust_data_path(data_dirs[0]);
+
 	if (plugins_path.len)
 		build_list_file(plugins_path, data_dirs, LIST_PLUGINS);
+
+	LT_ASSERT(data_dirs = arr_insert(data_dirs, 0, lt_lsbuild(alloc, "%s/data", root_path)));
+	case_adjust_data_path(data_dirs[0]);
+
 	if (archives_path.len)
 		build_list_file(archives_path, data_dirs, LIST_ARCHIVES);
+	if (loadorder_path.len)
+		build_list_file(loadorder_path, data_dirs, LIST_LOADORDER);
 }
 
 void update_config(lstr_t conf_path) {
@@ -581,9 +620,9 @@ int main(int argc, char** argv) {
 	if (mods_section_i < 0)
 		mods_section_i = ini_add_section(&config, CLSTR("mods"));
 
-	char* root_path = lt_lstos(ini_find_value(&config, CLSTR("paths"), CLSTR("game")), alloc);
-	char* mods_path = lt_lsbuild(alloc, "%s/mods%c", profile_path, 0).str;
-	char* output_path = lt_lsbuild(alloc, "%s/output%c", profile_path, 0).str;
+	root_path = lt_lstos(ini_find_value(&config, CLSTR("paths"), CLSTR("game")), alloc);
+	mods_path = lt_lsbuild(alloc, "%s/mods%c", profile_path, 0).str;
+	output_path = lt_lsbuild(alloc, "%s/output%c", profile_path, 0).str;
 
 	mods_init();
 
@@ -591,22 +630,12 @@ int main(int argc, char** argv) {
 	arr_t(avail_mod_t) avail_mods = get_available_mods(mods_path);
 	arr_t(mod_t*) mods = get_mods(modlist, avail_mods);
 
-	arr_t(lstr_t) data_dirs = arr_alloc(lstr_t);
-	LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/data", root_path)));
-	LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/data", output_path)));
-	for (usz i = 0; i < arr_count(mods); ++i) {
-		LT_ASSERT(data_dirs = arr_push(data_dirs, lt_lsbuild(alloc, "%s/mods/%S/data", profile_path, mods[i]->name)));
-	}
-	for (usz i = 0; i < arr_count(data_dirs); ++i) {
-		case_adjust_data_path(data_dirs[i]);
-	}
-
 	if (strcmp(args[0], "mount") == 0) {
 		if (dir_mounted(root_path)) {
 			lt_ferrf("an lmodorg vfs is already mounted in '%s'\n", root_path);
 		}
 
-		autocreate_list_files(data_dirs);
+		autocreate_list_files(mods);
 
 		copy_profile_configs();
 
@@ -901,7 +930,7 @@ int main(int argc, char** argv) {
 			lt_ferrf("command 'generate' takes no arguments\n");
 		}
 
-		autocreate_list_files(data_dirs);
+		autocreate_list_files(mods);
 	}
 
 	else {
@@ -909,11 +938,6 @@ int main(int argc, char** argv) {
 	}
 
 	mods_terminate();
-
-	for (usz i = 0; i < arr_count(data_dirs); ++i) {
-		lt_mfree(alloc, data_dirs[i].str);
-	}
-	arr_free(data_dirs);
 
 	arr_free(modlist);
 	for (usz i = 0; i < arr_count(avail_mods); ++i) {
